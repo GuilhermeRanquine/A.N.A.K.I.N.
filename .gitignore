@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Ambientes Virtuais
+.venv/
+venv/
+ENV/
+env/
+
+# Arquivos de Ambiente e Segredos
+.env
+.env.*
+!.env.example
+
+# IDEs e Editores
+.idea/
+*.swp
+*.swo
+.vscode/*
+!.vscode/settings.json
+
+# Dados e Banco local
+data/*.duckdb*
+data/*.parquet
+data/*.csv
+data/*.png
+
+# Prompts e saídas do Agente
+prompt_minimax.md
+ultima_resposta_agente.md
+
+# Saídas e Logs
+*.log
