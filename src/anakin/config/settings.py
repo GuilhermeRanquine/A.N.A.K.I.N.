@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     # Caminho do cache DuckDB
     duckdb_path: str = "data/anakin_readonly.duckdb"
 
+    # Chave e modelo do Google Gemini
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"
+
     # Outras chaves opcionais
     nvidia_api_key: str | None = None
-    gemini_api_key: str | None = None
 
 
 @lru_cache(maxsize=1)

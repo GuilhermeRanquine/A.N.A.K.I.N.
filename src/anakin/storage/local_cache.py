@@ -5,13 +5,24 @@ sem gastar chamadas adicionais nem ultrapassar o rate limit do Milvus.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import json
+import re
+import unicodedata
 import duckdb
 import pandas as pd
 
 from anakin.config.settings import Settings, get_settings
 from anakin.domain.ticket_models import TicketSummary
+
+
+def normalizar_para_busca(texto: str) -> str:
+    """Normaliza texto para busca removendo acentos, pontuação, traços e espaços."""
+    if not texto:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", str(texto))
+    sem_acento = "".join([c for c in nfkd if not unicodedata.combining(c)])
+    return re.sub(r"[^a-z0-9]", "", sem_acento.lower())
 
 
 class LocalCache:
@@ -29,7 +40,7 @@ class LocalCache:
         return duckdb.connect(str(self.db_path))
 
     def _inicializar_tabelas(self) -> None:
-        """Cria as tabelas analíticas caso não existam."""
+        """Cria as tabelas analíticas caso não existam e adiciona colunas necessárias."""
         with self._obter_conexao() as con:
             con.execute(
                 """
@@ -44,6 +55,7 @@ class LocalCache:
                     status VARCHAR,
                     prioridade VARCHAR,
                     tecnico VARCHAR,
+                    email_tecnico VARCHAR,
                     mesa_trabalho VARCHAR,
                     categoria_primaria VARCHAR,
                     categoria_secundaria VARCHAR,
@@ -53,6 +65,11 @@ class LocalCache:
                     status_sla_resposta VARCHAR,
                     status_sla_solucao VARCHAR,
                     atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                ALTER TABLE chamados ADD COLUMN IF NOT EXISTS email_tecnico VARCHAR;
+                CREATE TABLE IF NOT EXISTS tecnicos_alias (
+                    nome_normalizado VARCHAR PRIMARY KEY,
+                    email_tecnico VARCHAR
                 );
                 """
             )
@@ -88,12 +105,12 @@ class LocalCache:
                     """
                     INSERT INTO chamados (
                         id, codigo, cliente, cliente_token, contato, assunto, descricao,
-                        status, prioridade, tecnico, mesa_trabalho, categoria_primaria,
+                        status, prioridade, tecnico, email_tecnico, mesa_trabalho, categoria_primaria,
                         categoria_secundaria, data_criacao, data_modificacao, data_solucao,
                         status_sla_resposta, status_sla_solucao, atualizado_em
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?,
                         ?, ?, now()
                     )
@@ -107,6 +124,7 @@ class LocalCache:
                         status = EXCLUDED.status,
                         prioridade = EXCLUDED.prioridade,
                         tecnico = EXCLUDED.tecnico,
+                        email_tecnico = EXCLUDED.email_tecnico,
                         mesa_trabalho = EXCLUDED.mesa_trabalho,
                         categoria_primaria = EXCLUDED.categoria_primaria,
                         categoria_secundaria = EXCLUDED.categoria_secundaria,
@@ -128,6 +146,7 @@ class LocalCache:
                         status_str,
                         prioridade_str,
                         t.tecnico,
+                        t.email_tecnico,
                         t.mesa_trabalho,
                         t.categoria_primaria,
                         t.categoria_secundaria,
@@ -140,6 +159,58 @@ class LocalCache:
                 )
 
         return len(tickets)
+
+    def obter_email_tecnico(self, nome_tecnico: str) -> Optional[str]:
+        """Recupera o e-mail/username cadastrado para um técnico a partir do nome."""
+        if not nome_tecnico:
+            return None
+        nome_norm = normalizar_para_busca(nome_tecnico)
+        if not nome_norm:
+            return None
+
+        with self._obter_conexao() as con:
+            # 1. Busca na tabela de aliases aprendidos
+            row = con.execute(
+                "SELECT email_tecnico FROM tecnicos_alias WHERE nome_normalizado = ?",
+                [nome_norm],
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+
+            # 2. Busca como fallback na tabela chamados
+            row_chamados = con.execute(
+                """
+                SELECT email_tecnico FROM chamados 
+                WHERE email_tecnico IS NOT NULL 
+                  AND email_tecnico != ''
+                  AND LOWER(tecnico) LIKE ? 
+                LIMIT 1
+                """,
+                [f"%{nome_tecnico.strip().lower()}%"],
+            ).fetchone()
+            if row_chamados and row_chamados[0]:
+                return str(row_chamados[0])
+
+        return None
+
+    def salvar_email_tecnico(self, nome_tecnico: str, email_tecnico: str) -> None:
+        """Salva ou atualiza a memória de e-mail/username de um técnico."""
+        if not nome_tecnico or not email_tecnico:
+            return
+        nome_norm = normalizar_para_busca(nome_tecnico)
+        email_limpo = email_tecnico.strip()
+        if not nome_norm or not email_limpo:
+            return
+
+        with self._obter_conexao() as con:
+            con.execute(
+                """
+                INSERT INTO tecnicos_alias (nome_normalizado, email_tecnico)
+                VALUES (?, ?)
+                ON CONFLICT (nome_normalizado) DO UPDATE SET email_tecnico = EXCLUDED.email_tecnico;
+                """,
+                [nome_norm, email_limpo],
+            )
 
     def obter_chamados_df(self, status: Optional[str | int] = None) -> pd.DataFrame:
         """Carrega os chamados do cache em um DataFrame do Pandas."""

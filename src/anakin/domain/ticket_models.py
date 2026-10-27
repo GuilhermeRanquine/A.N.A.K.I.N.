@@ -36,6 +36,7 @@ class TicketSummary(BaseModel):
     status: Optional[str | int] = None
     prioridade: Optional[str | int] = None
     tecnico: Optional[str] = None
+    email_tecnico: Optional[str] = None
     mesa_trabalho: Optional[str] = None
     categoria_primaria: Optional[str] = None
     categoria_secundaria: Optional[str] = None
@@ -70,6 +71,7 @@ class TicketSummary(BaseModel):
         normalized["status"] = get_first("status", "status_nome", "chamado_status")
         normalized["prioridade"] = get_first("prioridade", "prioridade_nome")
         normalized["tecnico"] = get_first("tecnico", "tecnico_nome", "analista", "usuario_nome", "responsavel")
+        normalized["email_tecnico"] = get_first("email_tecnico", "tecnico_email", "email_analista", "usuario_email", "email_responsavel")
         normalized["mesa_trabalho"] = get_first("mesa_trabalho", "mesa_trabalho_nome", "mesa")
         normalized["categoria_primaria"] = get_first("categoria_primaria", "categoria", "categoria_nome")
         normalized["categoria_secundaria"] = get_first("categoria_secundaria", "subcategoria", "subcategoria_nome")

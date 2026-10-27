@@ -1,0 +1,281 @@
+"""Cliente de criação controlada e segura de chamados no Milvus.
+
+Garante trava estrita: permite exclusivamente consulta de clientes (GET /cliente/busca),
+abertura de chamados (POST /chamado/criar) e envio opcional de anexo.
+Proíbe qualquer método PUT, DELETE ou alteração em cadastros de clientes/contatos.
+"""
+
+from pathlib import Path
+from typing import Any, Optional
+import re
+import time
+import unicodedata
+import duckdb
+import httpx
+from aiolimiter import AsyncLimiter
+from rich.console import Console
+
+from anakin.config.settings import Settings, get_settings
+from anakin.domain.ticket_creation_models import MilvusCreateTicketPayload
+
+console = Console()
+
+
+def normalizar_para_busca(texto: str) -> str:
+    """Normaliza texto para busca removendo acentos, pontuação, traços e espaços."""
+    if not texto:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", str(texto))
+    sem_acento = "".join([c for c in nfkd if not unicodedata.combining(c)])
+    return re.sub(r"[^a-z0-9]", "", sem_acento.lower())
+
+
+class CreationSafetyError(Exception):
+    """Exceção levantada ao tentar violar a política estrita de criação de chamados."""
+
+
+class MilvusTicketCreatorClient:
+    """Cliente responsável pela busca de empresas e criação segura de chamados no Milvus."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        self.base_url = self.settings.milvus_base_url.rstrip("/")
+        # Rate limit rigoroso de 1 requisição a cada 62s
+        self._limiter = AsyncLimiter(1, self.settings.milvus_rate_limit_seconds)
+        self._last_request_time: float = 0.0
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_headers(self) -> dict[str, str]:
+        """Retorna cabeçalhos oficiais com token puro (sem prefixo Bearer)."""
+        return {
+            "Authorization": self.settings.milvus_api_token,
+            "Accept": "application/json",
+        }
+
+    def _validar_rota(self, method: str, path: str) -> None:
+        """Trava rígida: Allowlist restrita a buscas e criação controlada."""
+        method_upper = method.upper()
+        clean_path = path.strip()
+        if not clean_path.startswith("/"):
+            clean_path = "/" + clean_path
+
+        # Rota 1: GET /cliente/busca
+        if method_upper == "GET" and clean_path == "/cliente/busca":
+            return
+
+        # Rota 2: POST /chamado/criar
+        if method_upper == "POST" and clean_path == "/chamado/criar":
+            return
+
+        # Rota 3: POST /chamado/anexo/criar/{chamado_id}
+        if method_upper == "POST" and clean_path.startswith("/chamado/anexo/criar/"):
+            return
+
+        raise CreationSafetyError(
+            f"VIOLAÇÃO DE SEGURANÇA: O método '{method_upper}' ou rota '{clean_path}' "
+            f"não é permitido neste cliente. Proibida qualquer alteração em clientes ou rotas não autorizadas."
+        )
+
+    async def _obter_client(self) -> httpx.AsyncClient:
+        """Inicializa ou reaproveita o cliente HTTP assíncrono."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers=self._get_headers(),
+                timeout=httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=15.0),
+            )
+        return self._client
+
+    async def _aguardar_rate_limit(self) -> None:
+        """Exibe aviso e aguarda a janela de rate limit de 62s."""
+        now = time.monotonic()
+        if self._last_request_time > 0:
+            elapsed = now - self._last_request_time
+            restante = self.settings.milvus_rate_limit_seconds - elapsed
+            if restante > 0:
+                console.print(
+                    f"[bold yellow][Milvus Rate Limit][/bold yellow] Aguardando janela de segurança "
+                    f"({restante:.1f}s restantes antes da próxima requisição)..."
+                )
+
+        await self._limiter.acquire()
+        self._last_request_time = time.monotonic()
+
+    async def resolver_empresa(
+        self,
+        nome_busca: str,
+        duckdb_path: str = "data/anakin_readonly.duckdb",
+    ) -> list[dict[str, str]]:
+        """Localiza empresas candidatas e seus respectivos tokens no Milvus.
+
+        Estratégia eficiente e tolerante a espaços/acentos:
+        1. Primeiro busca no DuckDB local (sem consumir requisição na API).
+        2. Normaliza ambos os lados removendo espaços, traços e acentos (ex: 'upgradeti' -> 'UPGRADE TI').
+        3. Se não encontrar localmente, consulta GET /cliente/busca na API oficial.
+        """
+        termo = nome_busca.strip()
+        if not termo:
+            return []
+
+        termo_norm = normalizar_para_busca(termo)
+
+        # 1. Busca no cache DuckDB local com normalização ampla
+        db_file = Path(duckdb_path)
+        if db_file.exists():
+            try:
+                with duckdb.connect(str(db_file), read_only=True) as con:
+                    query = """
+                        SELECT DISTINCT cliente, cliente_token
+                        FROM chamados
+                        WHERE cliente_token IS NOT NULL
+                    """
+                    rows = con.execute(query).fetchall()
+                    candidatos_locais = []
+                    ja_inseridos = set()
+
+                    for r_cliente, r_token in rows:
+                        if not r_cliente or not r_token:
+                            continue
+                        nome_str = str(r_cliente).strip()
+                        token_str = str(r_token).strip()
+                        cliente_norm = normalizar_para_busca(nome_str)
+
+                        if termo_norm in cliente_norm or cliente_norm in termo_norm:
+                            chave = (nome_str, token_str)
+                            if chave not in ja_inseridos:
+                                ja_inseridos.add(chave)
+                                candidatos_locais.append({"nome": nome_str, "token": token_str})
+
+                    if candidatos_locais:
+                        console.print(f"[dim green]✓ Empresa localizada no cache local DuckDB (0 requisições gastas).[/dim green]")
+                        return candidatos_locais
+            except Exception as e:
+                console.print(f"[dim yellow]Aviso ao consultar DuckDB local: {e}[/dim yellow]")
+
+        # 2. Busca na API do Milvus: GET /cliente/busca
+        self._validar_rota("GET", "/cliente/busca")
+        await self._aguardar_rate_limit()
+
+        client = await self._obter_client()
+        resp = await client.get(
+            "/cliente/busca",
+            params={"nome_fantasia": termo, "status": 1},
+        )
+        resp.raise_for_status()
+
+        data = resp.json()
+        lista_clientes = data.get("lista", []) if isinstance(data, dict) else data
+
+        # Se a busca exata vier vazia, consulta lista de clientes ativos e filtra com normalização
+        if not lista_clientes:
+            console.print(f"[dim]Buscando listagem geral de clientes ativos para correspondência ampla...[/dim]")
+            await self._aguardar_rate_limit()
+            resp_geral = await client.get(
+                "/cliente/busca",
+                params={"status": 1, "total_registros": 100},
+            )
+            resp_geral.raise_for_status()
+            data_geral = resp_geral.json()
+            lista_clientes = data_geral.get("lista", []) if isinstance(data_geral, dict) else data_geral
+
+        candidatos: list[dict[str, str]] = []
+        ja_inseridos_api = set()
+
+        for c in lista_clientes:
+            if not isinstance(c, dict):
+                continue
+            nome_fantasia = str(c.get("nome_fantasia") or "").strip()
+            razao_social = str(c.get("razao_social") or "").strip()
+            token = str(c.get("token") or "").strip()
+
+            if not token:
+                continue
+
+            nf_norm = normalizar_para_busca(nome_fantasia)
+            rz_norm = normalizar_para_busca(razao_social)
+
+            # Checa correspondência com o termo normalizado
+            if (
+                (nf_norm and (termo_norm in nf_norm or nf_norm in termo_norm))
+                or (rz_norm and (termo_norm in rz_norm or rz_norm in termo_norm))
+            ):
+                nome_exibicao = nome_fantasia if nome_fantasia else razao_social
+                chave = (nome_exibicao, token)
+                if chave not in ja_inseridos_api:
+                    ja_inseridos_api.add(chave)
+                    candidatos.append({"nome": nome_exibicao, "token": token})
+
+        return candidatos
+
+    def resolver_tecnico_local(
+        self,
+        termo_tecnico: str,
+        duckdb_path: str = "data/anakin_readonly.duckdb",
+    ) -> Optional[str]:
+        """Localiza o nome cadastrado do técnico no DuckDB local."""
+        if not termo_tecnico:
+            return None
+        db_file = Path(duckdb_path)
+        if not db_file.exists():
+            return None
+        try:
+            termo_norm = normalizar_para_busca(termo_tecnico)
+            with duckdb.connect(str(db_file), read_only=True) as con:
+                rows = con.execute("SELECT DISTINCT tecnico FROM chamados WHERE tecnico IS NOT NULL").fetchall()
+                for (tec,) in rows:
+                    if not tec:
+                        continue
+                    tec_norm = normalizar_para_busca(str(tec))
+                    if termo_norm in tec_norm or tec_norm in termo_norm:
+                        return str(tec)
+        except Exception:
+            pass
+        return None
+
+    async def criar_chamado(self, payload: MilvusCreateTicketPayload) -> Any:
+        """Abre um novo chamado no Milvus (POST /chamado/criar) após confirmação do operador."""
+        self._validar_rota("POST", "/chamado/criar")
+        await self._aguardar_rate_limit()
+
+        client = await self._obter_client()
+        corpo = payload.to_clean_payload()
+
+        resp = await client.post("/chamado/criar", json=corpo)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def anexar_arquivo(
+        self,
+        chamado_id: str | int,
+        caminho_arquivo: str | Path,
+    ) -> dict[str, Any]:
+        """Envia um anexo (print ou documento) para o chamado criado via multipart/form-data."""
+        path_anexo = Path(caminho_arquivo).resolve()
+        if not path_anexo.exists() or not path_anexo.is_file():
+            raise FileNotFoundError(f"Arquivo anexo não encontrado: '{caminho_arquivo}'")
+
+        endpoint = f"/chamado/anexo/criar/{chamado_id}"
+        self._validar_rota("POST", endpoint)
+        await self._aguardar_rate_limit()
+
+        client = await self._obter_client()
+
+        with open(path_anexo, "rb") as f:
+            files = {"anexo": (path_anexo.name, f.read())}
+
+        # Não envia Content-Type application/json para multipart
+        headers = {"Authorization": self.settings.milvus_api_token}
+        resp = await client.post(endpoint, files=files, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def close(self) -> None:
+        """Encerra a conexão HTTP."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> "MilvusTicketCreatorClient":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        await self.close()
