@@ -16,8 +16,8 @@ class DraftTicketExtraction(BaseModel):
     chamado_contato: str | None = Field(default=None, description="Nome da pessoa solicitante, se mencionado")
     chamado_telefone: str | None = Field(default=None, description="Telefone do solicitante apenas para o chamado, se mencionado")
     chamado_email: str | None = Field(default=None, description="E-mail do solicitante para o chamado, se mencionado")
-    chamado_tecnico: str | None = Field(default=None, description="Nome ou e-mail do técnico a atribuir, se mencionado")
-    chamado_mesa: str | None = Field(default=None, description="Mesa ou fila de atendimento para atribuir, se mencionado")
+    chamado_tecnico: str | None = Field(default=None, description="Nome ou e-mail do Operador (técnico de suporte) a atribuir no Milvus, se mencionado")
+    chamado_mesa: str | None = Field(default=None, description="Nome da Mesa de Trabalho solicitada no Milvus, se mencionada")
     dados_suficientes: bool = Field(description="True somente se houver empresa_alvo, chamado_assunto e chamado_descricao claros")
     mensagem_para_operador: str = Field(description="Resumo curto ou pergunta caso falte empresa, assunto ou descrição")
 
@@ -35,8 +35,8 @@ class MilvusCreateTicketPayload(BaseModel):
     chamado_contato: str | None = Field(default=None, description="Nome do contato para o chamado")
     chamado_telefone: str | None = Field(default=None, description="Telefone do contato")
     chamado_email: str | None = Field(default=None, description="E-mail do contato")
-    chamado_tecnico: str | None = Field(default=None, description="Username ou e-mail do técnico responsável no Milvus")
-    chamado_mesa: str | None = Field(default=None, description="Mesa ou fila de atendimento no Milvus")
+    chamado_tecnico: str | None = Field(default=None, description="Username ou e-mail do Operador responsável no Milvus")
+    chamado_mesa: str | None = Field(default=None, description="Mesa de Trabalho no Milvus")
 
     @model_validator(mode="after")
     def gerar_html_descricao(self) -> "MilvusCreateTicketPayload":

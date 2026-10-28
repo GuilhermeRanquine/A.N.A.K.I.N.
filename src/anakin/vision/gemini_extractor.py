@@ -32,13 +32,25 @@ SYSTEM_INSTRUCTION = (
     "'Instalação de certificado digital').\n"
     "3. chamado_descricao: Escreva uma descrição técnica clara e detalhada contendo o relato do problema, "
     "mensagens de erro visíveis no print e ações já executadas.\n"
-    "4. chamado_contato, chamado_telefone, chamado_email: Extraia dados da pessoa solicitante apenas se citados.\n"
-    "5. chamado_tecnico: Extraia o nome ou e-mail do técnico a ser atribuído, se citado explicitamente no pedido.\n"
-    "6. chamado_mesa: Extraia o nome da mesa de trabalho ou fila de atendimento, se citada explicitamente no pedido.\n"
+    "4. chamado_contato, chamado_telefone, chamado_email: Extraia dados da pessoa solicitante apenas se citados no texto ou visíveis no print.\n"
+    "5. chamado_tecnico: Extraia o nome ou e-mail do Operador (técnico de suporte) a ser atribuído ao chamado, "
+    "se citado no pedido (ex: 'Operador Fulano', 'Técnico Ciclano', 'atribuir para Fulano').\n"
+    "6. chamado_mesa: Extraia o nome da Mesa de Trabalho solicitada, se citada no pedido. REMOVA artigos e preposições "
+    "iniciais como 'Mesa de Trabalho do/da/de/para', 'Mesa de', 'Mesa', 'Fila' (ex: se o usuário disser 'Mesa de Trabalho do Felipe', "
+    "extraia apenas 'Felipe'; se disser 'mesa de suporte', extraia 'Suporte').\n"
     "7. dados_suficientes: Deve ser True EXCLUSIVAMENTE se 'empresa_alvo', 'chamado_assunto' e 'chamado_descricao' "
     "estiverem claros e definidos. Se faltar a empresa ou o problema não estiver claro, marque dados_suficientes=False.\n"
     "8. mensagem_para_operador: Se dados_suficientes for False, formule uma pergunta curta e educada indicando "
-    "o que está faltando para abrir o chamado. Se for True, apresente um resumo breve do chamado."
+    "o que está faltando para abrir o chamado. Se for True, apresente um resumo breve do chamado.\n"
+    "9. LEITURA APROFUNDADA DE PRINTS (@colar ou arquivo): Quando houver imagem/print anexado e o operador não tiver "
+    "ditado assunto ou descrição explícitos no texto, você DEVE inspecionar atentamente a imagem (conversa de WhatsApp, "
+    "e-mail, tela de erro do Windows/ERP). Extraia todo o contexto da conversa, gere um 'chamado_assunto' cirúrgico e "
+    "uma 'chamado_descricao' completa, técnica e estruturada detalhando o problema relatado pelo cliente.\n"
+    "10. MEMÓRIA CONTÍNUA DE RASCUNHO (STATEFUL DRAFT): Quando for informado um 'RASCUNHO ATUAL EM ANDAMENTO', sua missão "
+    "é atualizar o rascunho com as novas informações fornecidas pelo operador. PRESERVE integralmente todos os campos já preenchidos "
+    "anteriormente (chamado_assunto, chamado_descricao, chamado_contato, chamado_telefone, chamado_email, chamado_mesa, chamado_tecnico, empresa_alvo), "
+    "substituindo apenas o que o operador adicionar ou pedir explicitamente para alterar. Se a nova mensagem trouxer apenas um complemento "
+    "(ex: apenas a empresa, ou apenas correção da mesa ou operador), mantenha o assunto e a descrição técnica anteriores intactos!"
 )
 
 
@@ -181,8 +193,27 @@ class GeminiTicketExtractor:
         self,
         texto_usuario: str,
         imagem_path: Optional[str | Path] = None,
+        rascunho_previo: Optional[dict[str, Any]] = None,
     ) -> DraftTicketExtraction:
-        """Executa a extração com cascata automática sem loop infinito em 429."""
+        """Executa a extração com cascata automática sem loop infinito em 429, suportando rascunho cumulativo."""
+        bloco_rascunho = ""
+        if rascunho_previo:
+            campos_ativos = {k: v for k, v in rascunho_previo.items() if v}
+            if campos_ativos:
+                bloco_rascunho = (
+                    "RASCUNHO ATUAL EM ANDAMENTO (Turnos anteriores):\n"
+                    f"{json.dumps(campos_ativos, ensure_ascii=False, indent=2)}\n\n"
+                    "INSTRUÇÃO DE ATUALIZAÇÃO / MERGE:\n"
+                    "Atualize o rascunho em andamento com as novas informações do operador. "
+                    "PRESERVE integralmente todos os campos já preenchidos anteriormente "
+                    "(chamado_assunto, chamado_descricao, chamado_contato, chamado_telefone, chamado_email, chamado_mesa, chamado_tecnico, empresa_alvo), "
+                    "substituindo apenas o que o operador adicionar ou pedir explicitamente para alterar. "
+                    "Se a nova mensagem trouxer apenas um complemento (ex: nome da empresa ou ajuste de mesa/técnico), "
+                    "mantenha o assunto e a descrição técnica anteriores intactos!\n\n"
+                )
+
+        prompt_final = f"{bloco_rascunho}SOLICITAÇÃO DO OPERADOR:\n{texto_usuario}".strip() if bloco_rascunho else texto_usuario
+
         inputs: list[dict[str, Any]] = []
 
         if imagem_path:
@@ -199,8 +230,10 @@ class GeminiTicketExtractor:
 
         inputs.append({
             "type": "text",
-            "text": texto_usuario,
+            "text": prompt_final,
         })
+
+        extraction: Optional[DraftTicketExtraction] = None
 
         # Cascata de modelos Gemini: gemini-3.5-flash-lite -> gemini-3.1-flash-lite
         modelos_gemini = [self.model]
@@ -209,18 +242,28 @@ class GeminiTicketExtractor:
 
         for mod in modelos_gemini:
             try:
-                raw_output = self._executar_gemini_modelo(mod, inputs, texto_usuario, imagem_path)
+                raw_output = self._executar_gemini_modelo(mod, inputs, prompt_final, imagem_path)
                 if raw_output:
                     clean_json = raw_output.strip()
                     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_json)
                     if match:
                         clean_json = match.group(1).strip()
                     console.print(f"[dim green]✓ Extração concluída com sucesso via Gemini ({mod}).[/dim green]")
-                    return DraftTicketExtraction.model_validate_json(clean_json)
+                    extraction = DraftTicketExtraction.model_validate_json(clean_json)
+                    break
             except Exception as e:
                 err_str = str(e)
                 console.print(f"[yellow]Modelo Gemini '{mod}' indisponível ({err_str[:90]}...). Avançando cascata...[/yellow]")
 
         # Fallback definitivo para NVIDIA NIM Minimax caso a cota do Gemini esteja esgotada
-        console.print("[bold cyan]Cota Gemini 429/indisponível. Ativando fallback automático NVIDIA NIM (Minimax m3.1-flash)...[/bold cyan]")
-        return self._extrair_com_nvidia_nim(texto_usuario, imagem_path)
+        if extraction is None:
+            console.print("[bold cyan]Cota Gemini 429/indisponível. Ativando fallback automático NVIDIA NIM (Minimax m3.1-flash)...[/bold cyan]")
+            extraction = self._extrair_com_nvidia_nim(prompt_final, imagem_path)
+
+        # Pós-processamento: normalização de prefixos em chamado_mesa
+        if extraction.chamado_mesa:
+            padrao = r"^(?:mesa(?:\s+de\s+trabalho)?(?:\s+(?:do|da|de|dos|das|para|pro|pra))?\s*[:\-]?\s*|fila(?:\s+(?:do|da|de|para))?\s*[:\-]?\s*)"
+            limpo = re.sub(padrao, "", extraction.chamado_mesa.strip(), flags=re.IGNORECASE).strip()
+            extraction.chamado_mesa = limpo if limpo else extraction.chamado_mesa.strip()
+
+        return extraction

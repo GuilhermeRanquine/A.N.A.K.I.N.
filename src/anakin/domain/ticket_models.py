@@ -45,6 +45,7 @@ class TicketSummary(BaseModel):
     data_solucao: Optional[str] = None
     status_sla_resposta: Optional[str | float | int | dict[str, Any]] = None
     status_sla_solucao: Optional[str | float | int | dict[str, Any]] = None
+    raw_json: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -80,6 +81,12 @@ class TicketSummary(BaseModel):
         normalized["data_solucao"] = get_first("data_solucao", "solucionado_em", "data_hora_solucao")
         normalized["status_sla_resposta"] = get_first("status_sla_resposta", "sla_resposta", "sla_primeira_resposta")
         normalized["status_sla_solucao"] = get_first("status_sla_solucao", "sla_solucao", "sla_fechamento")
+        if "raw_json" not in normalized or not normalized.get("raw_json"):
+            import json as _json
+            try:
+                normalized["raw_json"] = _json.dumps(data, ensure_ascii=False)
+            except Exception:
+                normalized["raw_json"] = None
 
         return normalized
 
@@ -114,6 +121,9 @@ class TicketFollowUp(BaseModel):
     pessoa: Optional[str] = None
     perfil: Optional[str] = None
     texto: Optional[str] = None
+    texto_html: Optional[str] = None
+    log_tipo_text: Optional[str] = None
+    total_horas: Optional[str] = None
     data: Optional[str] = None
     privado: Optional[bool | int | str] = None
     tipo: Optional[str | int] = None
@@ -135,7 +145,10 @@ class TicketFollowUp(BaseModel):
         normalized = dict(data)
         normalized["pessoa"] = get_first("pessoa", "tecnico", "usuario", "usuario_nome", "nome_usuario", "autor")
         normalized["perfil"] = get_first("perfil", "tipo_usuario", "cargo")
-        normalized["texto"] = get_first("texto", "descricao", "mensagem", "comentario", "conteudo")
+        normalized["texto"] = get_first("texto", "descricao_formatada", "descricao", "mensagem", "comentario", "conteudo")
+        normalized["texto_html"] = get_first("texto_html", "html", "conteudo_html")
+        normalized["log_tipo_text"] = get_first("log_tipo_text", "tipo_texto", "log_tipo")
+        normalized["total_horas"] = get_first("total_horas", "horas")
         normalized["data"] = get_first("data", "data_criacao", "data_hora", "criado_em")
         normalized["privado"] = get_first("privado", "is_privado", "interno", "visibilidade")
         normalized["tipo"] = get_first("tipo", "tipo_acompanhamento")

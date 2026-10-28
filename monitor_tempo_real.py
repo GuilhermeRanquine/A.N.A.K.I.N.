@@ -52,7 +52,11 @@ async def ciclo_monitor(
 
         if tickets_abertos:
             qtd_salva = cache.salvar_chamados(tickets_abertos)
-            console.print(f"[dim green]✓ {qtd_salva} chamados sincronizados no DuckDB local.[/dim green]")
+            finalizados = cache.sincronizar_status_abertos([t.codigo for t in tickets_abertos if t.codigo])
+            if finalizados > 0:
+                console.print(f"[dim green]✓ {qtd_salva} chamados abertos salvos e {finalizados} finalizados atualizados no DuckDB.[/dim green]")
+            else:
+                console.print(f"[dim green]✓ {qtd_salva} chamados sincronizados no DuckDB local.[/dim green]")
         else:
             console.print("[dim yellow]Aviso: Nenhum chamado retornado pela API neste ciclo.[/dim yellow]")
     except ReadOnlySafetyError as se:

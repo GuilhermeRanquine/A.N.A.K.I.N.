@@ -71,6 +71,10 @@ class MilvusTicketCreatorClient:
         if method_upper == "POST" and clean_path.startswith("/chamado/anexo/criar/"):
             return
 
+        # Rota 4: POST /chamado/listagem (para recuperar o id interno do chamado recém-criado)
+        if method_upper == "POST" and clean_path == "/chamado/listagem":
+            return
+
         raise CreationSafetyError(
             f"VIOLAÇÃO DE SEGURANÇA: O método '{method_upper}' ou rota '{clean_path}' "
             f"não é permitido neste cliente. Proibida qualquer alteração em clientes ou rotas não autorizadas."
@@ -212,7 +216,7 @@ class MilvusTicketCreatorClient:
         termo_tecnico: str,
         duckdb_path: str = "data/anakin_readonly.duckdb",
     ) -> Optional[str]:
-        """Localiza o nome cadastrado do técnico no DuckDB local."""
+        """Localiza o nome oficial do operador no DuckDB local."""
         if not termo_tecnico:
             return None
         db_file = Path(duckdb_path)
@@ -221,13 +225,18 @@ class MilvusTicketCreatorClient:
         try:
             termo_norm = normalizar_para_busca(termo_tecnico)
             with duckdb.connect(str(db_file), read_only=True) as con:
-                rows = con.execute("SELECT DISTINCT tecnico FROM chamados WHERE tecnico IS NOT NULL").fetchall()
-                for (tec,) in rows:
-                    if not tec:
+                rows = con.execute("SELECT nome_exibicao, email_tecnico FROM operadores_oficiais").fetchall()
+                for nome, email in rows:
+                    if not nome:
                         continue
-                    tec_norm = normalizar_para_busca(str(tec))
-                    if termo_norm in tec_norm or tec_norm in termo_norm:
-                        return str(tec)
+                    nome_str = str(nome)
+                    email_str = str(email or "")
+                    if (
+                        termo_norm in normalizar_para_busca(nome_str)
+                        or normalizar_para_busca(nome_str) in termo_norm
+                        or (email_str and termo_norm in normalizar_para_busca(email_str))
+                    ):
+                        return nome_str
         except Exception:
             pass
         return None
@@ -244,11 +253,33 @@ class MilvusTicketCreatorClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def buscar_id_interno_chamado(self, codigo_chamado: str | int) -> Optional[str | int]:
+        """Consulta o chamado pelo código amigável para obter seu ID interno de 7/8 dígitos."""
+        self._validar_rota("POST", "/chamado/listagem")
+        await self._aguardar_rate_limit()
+
+        client = await self._obter_client()
+        resp = await client.post(
+            "/chamado/listagem",
+            params={"total_registros": 5, "pagina": 1},
+            json={"filtro_body": {"codigo": str(codigo_chamado)}},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("lista", []) if isinstance(data, dict) else data
+        if items and isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and str(item.get("codigo")) == str(codigo_chamado):
+                    return item.get("id")
+            if isinstance(items[0], dict) and items[0].get("id"):
+                return items[0].get("id")
+        return None
+
     async def anexar_arquivo(
         self,
         chamado_id: str | int,
         caminho_arquivo: str | Path,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Envia um anexo (print ou documento) para o chamado criado via multipart/form-data."""
         path_anexo = Path(caminho_arquivo).resolve()
         if not path_anexo.exists() or not path_anexo.is_file():
@@ -260,14 +291,20 @@ class MilvusTicketCreatorClient:
 
         client = await self._obter_client()
 
-        with open(path_anexo, "rb") as f:
-            files = {"anexo": (path_anexo.name, f.read())}
+        ext = path_anexo.suffix.lower()
+        mime_type = "image/png" if ext == ".png" else "image/jpeg" if ext in [".jpg", ".jpeg"] else "application/octet-stream"
 
-        # Não envia Content-Type application/json para multipart
+        with open(path_anexo, "rb") as f:
+            conteudo = f.read()
+
+        files = {"anexo": (path_anexo.name, conteudo, mime_type)}
         headers = {"Authorization": self.settings.milvus_api_token}
         resp = await client.post(endpoint, files=files, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception:
+            return resp.text
 
     async def close(self) -> None:
         """Encerra a conexão HTTP."""
