@@ -75,6 +75,10 @@ class MilvusTicketCreatorClient:
         if method_upper == "POST" and clean_path == "/chamado/listagem":
             return
 
+        # Rota 5: POST /chamado/atualizar (para atribuição controlada de técnico/operador)
+        if method_upper == "POST" and clean_path == "/chamado/atualizar":
+            return
+
         raise CreationSafetyError(
             f"VIOLAÇÃO DE SEGURANÇA: O método '{method_upper}' ou rota '{clean_path}' "
             f"não é permitido neste cliente. Proibida qualquer alteração em clientes ou rotas não autorizadas."
@@ -305,6 +309,59 @@ class MilvusTicketCreatorClient:
             return resp.json()
         except Exception:
             return resp.text
+
+    async def atribuir_operador(
+        self,
+        chamado_codigo_ou_id: str | int,
+        email_tecnico: str,
+    ) -> bool:
+        """Atribui um operador/técnico a um chamado existente no Milvus via POST /chamado/atualizar.
+
+        Args:
+            chamado_codigo_ou_id: Código ou ID interno do chamado.
+            email_tecnico: E-mail oficial do operador a ser atribuído.
+
+        Returns:
+            bool: True se a atribuição foi aceita com sucesso pela API do Milvus, False caso contrário.
+        """
+        self._validar_rota("POST", "/chamado/atualizar")
+        await self._aguardar_rate_limit()
+
+        client = await self._obter_client()
+        corpo = {
+            "chamado_ids": str(chamado_codigo_ou_id),
+            "chamado_tecnico": str(email_tecnico).strip(),
+        }
+
+        try:
+            resp = await client.post("/chamado/atualizar", json=corpo)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Verificação de resposta lógica da API Milvus
+            if isinstance(data, dict):
+                if data.get("status") is False:
+                    msg = data.get("mensagem") or data.get("retorno") or str(data)
+                    console.print(
+                        f"[bold red][Milvus Erro][/bold red] Falha ao atribuir chamado #{chamado_codigo_ou_id} "
+                        f"ao operador {email_tecnico}: {msg}"
+                    )
+                    return False
+
+            console.print(
+                f"[bold green]✓ Operador {email_tecnico} atribuído com sucesso ao chamado #{chamado_codigo_ou_id} no Milvus.[/bold green]"
+            )
+            return True
+        except httpx.HTTPStatusError as he:
+            console.print(
+                f"[bold red][Erro HTTP {he.response.status_code}][/bold red] ao atribuir chamado #{chamado_codigo_ou_id}: {he.response.text}"
+            )
+            return False
+        except Exception as e:
+            console.print(
+                f"[bold red][Erro Inesperado][/bold red] ao atribuir chamado #{chamado_codigo_ou_id}: {e}"
+            )
+            return False
 
     async def close(self) -> None:
         """Encerra a conexão HTTP."""

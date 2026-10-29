@@ -10,7 +10,6 @@ import json
 import re
 import unicodedata
 import duckdb
-import pandas as pd
 
 from anakin.config.settings import Settings, get_settings
 from anakin.domain.ticket_models import TicketSummary
@@ -524,8 +523,9 @@ class LocalCache:
 
         return candidatos
 
-    def obter_chamados_df(self, status: Optional[str | int] = None) -> pd.DataFrame:
-        """Carrega os chamados do cache em um DataFrame do Pandas."""
+    def obter_chamados_df(self, status: Optional[str | int] = None) -> Any:
+        """Carrega os chamados do cache em um DataFrame do Pandas (se disponível)."""
+        import pandas as pd
         query = "SELECT * FROM chamados"
         params: list[Any] = []
 
@@ -625,21 +625,23 @@ class LocalCache:
             return None
         cod_limpo = str(codigo).lstrip("#").strip()
         with self._obter_conexao() as con:
-            df = con.execute(
+            cursor = con.execute(
                 """
                 SELECT * FROM chamados
                 WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?
                 LIMIT 1
                 """,
                 [cod_limpo, cod_limpo],
-            ).fetch_df()
+            )
+            colunas = [desc[0] for desc in cursor.description]
+            row = cursor.fetchone()
 
-            if df.empty:
+            if not row:
                 return None
 
-            d = df.iloc[0].to_dict()
+            d = dict(zip(colunas, row))
             for k, v in list(d.items()):
-                if pd.isna(v):
+                if v is None:
                     d[k] = None
 
             if d.get("raw_json"):

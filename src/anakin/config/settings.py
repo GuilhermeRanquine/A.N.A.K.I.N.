@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"
 
+    # Pesos do Algoritmo de Fila Ponderada por Carga (Score de Ocupação)
+    peso_status_atendendo: int = 3
+    peso_status_a_fazer: int = 2
+    peso_status_pausado: int = 1
+    peso_status_outros: int = 1
+
     # Outras chaves opcionais
     nvidia_api_key: str | None = None
 
