@@ -393,12 +393,11 @@ async def ciclo_despachante(
                         triagem.prioridade
                     )
 
-                    prio_id = getattr(triagem, "prioridade_id", None) or "2"
                     subcat_txt = f" / {triagem.categoria_secundaria}" if triagem.categoria_secundaria else ""
 
-                    # Formato explícito da Tríade e ID da Prioridade
+                    # Formato explícito da Tríade e Prioridade textual
                     log_triagem = (
-                        f"✔ Triagem #{cod}: Prioridade: [{triagem.prioridade} (ID: {prio_id})] | "
+                        f"✔ Triagem #{cod}: Prioridade: [{triagem.prioridade}] | "
                         f"Mesa: [{op_escolhido.nome}] | Setor: [{op_escolhido.nome}] | "
                         f"Operador: [{op_escolhido.nome} ({op_escolhido.email})]"
                     )

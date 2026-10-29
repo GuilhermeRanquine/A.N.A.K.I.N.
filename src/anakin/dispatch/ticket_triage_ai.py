@@ -28,7 +28,7 @@ class ResultadoTriagemIA(BaseModel):
     """Contrato estruturado de retorno da triagem de chamado pela IA."""
 
     prioridade: str = Field(
-        description="Prioridade classificada com base no impacto: 'Crítico', 'Alto', 'Médio' ou 'Baixo'"
+        description="Prioridade classificada com base no impacto: 'Crítico', 'Alta' (ou 'Alto'), 'Média' (ou 'Médio') ou 'Baixa' (ou 'Baixo')"
     )
     tipo_ticket: str = Field(
         description="Tipo classificado: 'Requisição' (solicitação/acesso) ou 'Incidente' (falha/parou)"
@@ -63,13 +63,13 @@ class ResultadoTriagemIA(BaseModel):
 
     @property
     def prioridade_id(self) -> str:
-        """Retorna o ID numérico ('1', '2', '3' ou '4') oficial do Milvus."""
+        """Retorna o ID numérico ('1', '2', '3' ou '4') mantido para compatibilidade."""
         return obter_prioridade_id(self.prioridade)
 
     @property
     def prioridade_formatada(self) -> str:
-        """Retorna 'Nome (ID: X)' (ex: 'Médio (ID: 2)')."""
-        return f"{self.prioridade} (ID: {self.prioridade_id})"
+        """Retorna o nome textual da prioridade (ex: 'Médio')."""
+        return self.prioridade
 
 
 PRIORIDADE_ID_MAP: dict[str, str] = {
@@ -100,17 +100,17 @@ def obter_prioridade_id(prioridade_raw: str | int | None) -> str:
     return PRIORIDADE_ID_MAP.get(sem_acento, PRIORIDADE_ID_MAP.get(val_str, "2"))
 
 
-def normalizar_prioridade(prioridade_raw: str | None) -> str:
-    """Padroniza strings de prioridade para os quatro valores oficiais."""
+def normalizar_prioridade(prioridade_raw: str | int | None) -> str:
+    """Padroniza strings de prioridade para os quatro valores textuais oficiais da Upgrade TI no Milvus."""
     if not prioridade_raw:
         return "Médio"
     nfkd = unicodedata.normalize("NFKD", str(prioridade_raw))
     p = "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
-    if any(k in p for k in ["crit", "urgente", "emergencia", "gravissimo", "parada"]):
+    if any(k in p for k in ["crit", "urgente", "emergencia", "gravissimo", "parada", "4"]):
         return "Crítico"
-    elif any(k in p for k in ["alt", "high"]):
+    elif any(k in p for k in ["alt", "high", "3"]):
         return "Alto"
-    elif any(k in p for k in ["baix", "low", "plan"]):
+    elif any(k in p for k in ["baix", "low", "plan", "1"]):
         return "Baixo"
     return "Médio"
 
@@ -153,15 +153,11 @@ class TicketTriageAI:
             "Sua responsabilidade é analisar os dados brutos de um chamado aberto no Milvus Helpdesk "
             "e classificá-lo tecnicamente com máxima precisão.\n\n"
             "REGRAS DE CLASSIFICAÇÃO:\n\n"
-            "1. PRIORIDADE (baseada no impacto da ocorrência):\n"
-            "   - 'Crítico': Parada total da operação da empresa, faturamento interrompido, servidor ou infraestrutura central inoperante, "
-            "queda de link principal de internet sem redundância, invasão ou ransomware.\n"
-            "   - 'Alto': Problema grave afetando múltiplos usuários, diretoria da empresa, lentidão generalizada grave "
-            "ou processos urgentes com prazo iminente sem contorno viável.\n"
-            "   - 'Médio': Falha localizada em máquina de trabalho individual com impacto produtivo (ex: ERP travando, "
-            "erro de emissão de NF individual, lentidão severa em computador de trabalho, falha de VPN individual).\n"
-            "   - 'Baixo': Dúvidas de uso, solicitações rotineiras, instalações de softwares comuns, configuração de impressora, "
-            "configuração de Outlook, criação de e-mail ou pastas.\n\n"
+            "1. PRIORIDADE (classificação OBRIGATÓRIA em uma das 4 opções baseadas no impacto de negócio):\n"
+            "   - 'Crítico': Parada total de operação da empresa, servidor ou rede central inoperante, faturamento interrompido.\n"
+            "   - 'Alta': Problema urgente afetando múltiplos colaboradores ou diretoria sem contorno viável.\n"
+            "   - 'Média': Falha em estação de trabalho individual com perda parcial de produtividade (ex: ERP lento, erro em software de uso diário).\n"
+            "   - 'Baixa': Dúvidas, pequenas configurações, solicitações com prazo flexível ou de baixa urgência.\n\n"
             "2. TIPO DE TICKET:\n"
             "   - 'Requisição': Solicitação de novo serviço, criação/deleção de conta, instalação de software padrão, concessão de acesso ou dúvida.\n"
             "   - 'Incidente': Algo que funcionava normalmente e parou/quebrou (falha, erro, lentidão, tela azul, travamento, desconexão).\n\n"

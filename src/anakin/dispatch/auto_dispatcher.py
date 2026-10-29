@@ -571,10 +571,9 @@ class AutoDispatcher:
         tipo_str = getattr(triagem, "tipo_ticket", "Incidente")
         cat1_str = getattr(triagem, "categoria_primaria", "Geral")
         prio_str = getattr(triagem, "prioridade", "Médio")
-        prio_id = getattr(triagem, "prioridade_id", None) or "2"
 
         justificativa_fmt = (
-            f"Prioridade: [{prio_str} (ID: {prio_id})] | "
+            f"Prioridade: [{prio_str}] | "
             f"Mesa: [{operador.nome}] | Setor: [{operador.nome}] | "
             f"Operador: [{operador.nome} ({operador.email})]{tag_pool_str} | "
             f"Tipo: [{tipo_str}] | Categoria: [{cat1_str}{subcat_str}] | "

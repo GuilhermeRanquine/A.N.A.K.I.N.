@@ -157,25 +157,36 @@ class TestAutoDispatcher(unittest.TestCase):
         self.assertEqual(sc.score_total, 5)
         self.assertIn("Fallback", tag)
 
-    def test_mapeamento_numerico_prioridade(self) -> None:
-        """Valida que a prioridade é estritamente mapeada para '1', '2', '3' ou '4'."""
-        from anakin.milvus.ticket_creator_client import resolver_prioridade_id, PRIORIDADE_ID_MAP
+    def test_normalizacao_textual_prioridade(self) -> None:
+        """Valida que a prioridade é normalizada para o texto exato do Milvus (ex: 'Baixo', 'Médio', 'Alto', 'Crítico')."""
+        from anakin.milvus.ticket_creator_client import normalizar_prioridade_texto, resolver_prioridade_id
 
+        # Normalização textual casando com o Milvus / DuckDB
+        self.assertEqual(normalizar_prioridade_texto("Baixo"), "Baixo")
+        self.assertEqual(normalizar_prioridade_texto("baixa"), "Baixo")
+        self.assertEqual(normalizar_prioridade_texto("Médio"), "Médio")
+        self.assertEqual(normalizar_prioridade_texto("medio"), "Médio")
+        self.assertEqual(normalizar_prioridade_texto("média"), "Médio")
+        self.assertEqual(normalizar_prioridade_texto("Alto"), "Alto")
+        self.assertEqual(normalizar_prioridade_texto("alta"), "Alto")
+        self.assertEqual(normalizar_prioridade_texto("Crítico"), "Crítico")
+        self.assertEqual(normalizar_prioridade_texto("critico"), "Crítico")
+        self.assertEqual(normalizar_prioridade_texto("crítica"), "Crítico")
+
+        # Conversão de IDs numéricos para texto real do Milvus
+        self.assertEqual(normalizar_prioridade_texto("1"), "Baixo")
+        self.assertEqual(normalizar_prioridade_texto("2"), "Médio")
+        self.assertEqual(normalizar_prioridade_texto("3"), "Alto")
+        self.assertEqual(normalizar_prioridade_texto("4"), "Crítico")
+
+        # Mantém compatibilidade de resolver_prioridade_id
         self.assertEqual(resolver_prioridade_id("Baixo"), "1")
-        self.assertEqual(resolver_prioridade_id("baixa"), "1")
         self.assertEqual(resolver_prioridade_id("Médio"), "2")
-        self.assertEqual(resolver_prioridade_id("medio"), "2")
         self.assertEqual(resolver_prioridade_id("Alto"), "3")
-        self.assertEqual(resolver_prioridade_id("alta"), "3")
         self.assertEqual(resolver_prioridade_id("Crítico"), "4")
-        self.assertEqual(resolver_prioridade_id("critico"), "4")
-
-        # IDs diretos
-        self.assertEqual(resolver_prioridade_id("1"), "1")
-        self.assertEqual(resolver_prioridade_id("4"), "4")
 
     def test_triade_atribuicao_e_ordem_payload(self) -> None:
-        """Valida se Mesa, Setor e Operador são definidos no mesmo técnico e na ordem correta."""
+        """Valida se Mesa, Setor e Operador são definidos no mesmo técnico, texto de prioridade e envio duplo."""
         creator = MilvusTicketCreatorClient()
         # Mock de httpx client para capturar o payload gerado
         payload_capturado = {}
@@ -217,8 +228,9 @@ class TestAutoDispatcher(unittest.TestCase):
         self.assertEqual(payload_capturado["chamado_setor"], "Gabriel Sena")
         self.assertEqual(payload_capturado["chamado_tecnico"], "gabriel.sena@upgradeti.com.br")
 
-        # 2. Prioridade numérica obrigatória
-        self.assertEqual(payload_capturado["chamado_prioridade"], "2")
+        # 2. Prioridade textual real e envio duplo de chaves
+        self.assertEqual(payload_capturado["chamado_prioridade"], "Médio")
+        self.assertEqual(payload_capturado["prioridade"], "Médio")
 
         # 3. Ordem das chaves na serialização
         chaves = list(payload_capturado.keys())

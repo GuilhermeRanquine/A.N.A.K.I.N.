@@ -21,21 +21,6 @@ from anakin.domain.ticket_creation_models import MilvusCreateTicketPayload
 console = Console()
 
 
-PRIORIDADE_ID_MAP: dict[str, str] = {
-    "baixo": "1",
-    "baixa": "1",
-    "médio": "2",
-    "medio": "2",
-    "média": "2",
-    "media": "2",
-    "alto": "3",
-    "alta": "3",
-    "crítico": "4",
-    "critico": "4",
-    "crítica": "4",
-    "critica": "4",
-}
-
 MAPA_EMAIL_PARA_NOME_OPERADOR: dict[str, str] = {
     "carlos.bucazio@upgradeti.com.br": "Carlos Eduardo",
     "gabriel@upgradeti.com.br": "Gabriel Oliveira",
@@ -46,14 +31,93 @@ MAPA_EMAIL_PARA_NOME_OPERADOR: dict[str, str] = {
 }
 
 
+def obter_prioridades_milvus_validas(duckdb_path: str = "data/anakin_readonly.duckdb") -> list[str]:
+    """Descobre a grafia exata usada no Milvus a partir do DuckDB local."""
+    db_file = Path(duckdb_path)
+    if db_file.exists():
+        try:
+            with duckdb.connect(str(db_file), read_only=True) as conn:
+                return [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT DISTINCT prioridade FROM chamados "
+                        "WHERE prioridade IS NOT NULL AND prioridade NOT IN ('', '-', 'Não definida')"
+                    ).fetchall()
+                    if r[0]
+                ]
+        except Exception:
+            pass
+    return ["Crítico", "Alto", "Médio", "Baixo"]
+
+
+def normalizar_prioridade_texto(
+    prioridade_val: str | int | None,
+    prioridades_disponiveis: list[str] | None = None,
+    duckdb_path: str = "data/anakin_readonly.duckdb",
+) -> str:
+    """Casa o julgamento da IA ou entrada com a lista oficial de prioridades do Milvus.
+
+    Mapeamento:
+    - 'Crítico' / 'Crítica' / '4' -> busca correspondente com raiz 'crit' no Milvus (ex: 'Crítico')
+    - 'Alto' / 'Alta' / '3' -> busca correspondente com raiz 'alt' no Milvus (ex: 'Alto' ou 'Alta')
+    - 'Médio' / 'Média' / '2' -> busca correspondente com raiz 'med' no Milvus (ex: 'Médio' ou 'Média')
+    - 'Baixo' / 'Baixa' / '1' -> busca correspondente com raiz 'baix' no Milvus (ex: 'Baixo' ou 'Baixa')
+    """
+    if prioridades_disponiveis is None:
+        prioridades_disponiveis = obter_prioridades_milvus_validas(duckdb_path)
+
+    if not prioridade_val:
+        for p in prioridades_disponiveis:
+            if "med" in normalizar_para_busca(p):
+                return p
+        return "Médio"
+
+    val_str = str(prioridade_val).strip()
+    val_norm = normalizar_para_busca(val_str)
+
+    if val_norm in ("4", "critico", "critica") or "crit" in val_norm or "urgente" in val_norm:
+        alvo = "critico"
+    elif val_norm in ("3", "alto", "alta") or "alt" in val_norm:
+        alvo = "alto"
+    elif val_norm in ("1", "baixo", "baixa") or "baix" in val_norm or "plan" in val_norm:
+        alvo = "baixo"
+    else:
+        alvo = "medio"
+
+    if alvo == "critico":
+        for p in prioridades_disponiveis:
+            if "crit" in normalizar_para_busca(p):
+                return p
+        return "Crítico"
+    elif alvo == "alto":
+        for p in prioridades_disponiveis:
+            if "alt" in normalizar_para_busca(p):
+                return p
+        return "Alto"
+    elif alvo == "baixo":
+        for p in prioridades_disponiveis:
+            if "baix" in normalizar_para_busca(p):
+                return p
+        return "Baixo"
+    else:
+        for p in prioridades_disponiveis:
+            if "med" in normalizar_para_busca(p):
+                return p
+        return "Médio"
+
+
 def resolver_prioridade_id(prioridade_val: str | int | None) -> str:
-    """Garante que a prioridade seja convertida para ID numérico string oficial ('1', '2', '3' ou '4')."""
+    """Mapeador numérico mantido para compatibilidade ('1', '2', '3' ou '4')."""
     if not prioridade_val:
         return "2"
-    val_str = str(prioridade_val).strip().lower()
-    if val_str in ("1", "2", "3", "4"):
-        return val_str
-    return PRIORIDADE_ID_MAP.get(val_str, "2")
+    val_norm = normalizar_para_busca(str(prioridade_val))
+    if val_norm in ("4", "critico", "critica") or "crit" in val_norm:
+        return "4"
+    if val_norm in ("3", "alto", "alta") or "alt" in val_norm:
+        return "3"
+    if val_norm in ("1", "baixo", "baixa") or "baix" in val_norm:
+        return "1"
+    return "2"
 
 
 def normalizar_para_busca(texto: str) -> str:
@@ -414,8 +478,9 @@ class MilvusTicketCreatorClient:
         """Atualiza a triagem completa e atribuição de um chamado no Milvus via POST /chamado/atualizar.
 
         Garante:
-        1. chamado_prioridade recebe obrigatoriamente ID string numérico ('1', '2', '3' ou '4').
-        2. Tríade de Atribuição no mesmo técnico com ordem estrita:
+        1. Envio do texto real da prioridade (ex: 'Baixo', 'Médio', 'Alto', 'Crítico') correspondente ao Milvus.
+        2. Envio duplo de chaves: payload['chamado_prioridade'] e payload['prioridade'] com o valor textual exato.
+        3. Tríade de Atribuição no mesmo técnico com ordem estrita:
            - chamado_mesa: Nome do técnico
            - chamado_setor: Nome do técnico
            - chamado_tecnico: E-mail oficial do operador
@@ -423,8 +488,8 @@ class MilvusTicketCreatorClient:
         self._validar_rota("POST", "/chamado/atualizar")
         await self._aguardar_rate_limit()
 
-        # 1. Mapeamento Numérico Obrigatório da Prioridade ('1', '2', '3' ou '4')
-        id_prioridade = resolver_prioridade_id(prioridade)
+        # 1. Normalização do Texto Real da Prioridade (casa com DuckDB / Milvus)
+        prioridade_texto = normalizar_prioridade_texto(prioridade)
 
         # 2. Resolução do nome do operador caso venha apenas o e-mail
         nome_final = nome_operador
@@ -436,10 +501,11 @@ class MilvusTicketCreatorClient:
         # 2º chamado_mesa (Mesa de Trabalho)
         # 3º chamado_setor (Setor)
         # 4º chamado_tecnico (E-mail do operador)
-        # 5º chamado_prioridade (ID '1', '2', '3' ou '4')
-        # 6º chamado_tipo_chamado
-        # 7º chamado_categoria_primaria
-        # 8º chamado_categoria_secundaria
+        # 5º chamado_prioridade (Texto da Prioridade)
+        # 6º prioridade (Envio Duplo para compatibilidade da API)
+        # 7º chamado_tipo_chamado
+        # 8º chamado_categoria_primaria
+        # 9º chamado_categoria_secundaria
         corpo: dict[str, Any] = {
             "chamado_ids": str(chamado_codigo_ou_id),
         }
@@ -451,7 +517,8 @@ class MilvusTicketCreatorClient:
         if email_tecnico:
             corpo["chamado_tecnico"] = str(email_tecnico).strip()
 
-        corpo["chamado_prioridade"] = id_prioridade
+        corpo["chamado_prioridade"] = prioridade_texto
+        corpo["prioridade"] = prioridade_texto
         corpo["chamado_tipo_chamado"] = str(tipo_ticket).strip()
         corpo["chamado_categoria_primaria"] = str(categoria_primaria).strip()
 
@@ -464,6 +531,10 @@ class MilvusTicketCreatorClient:
             corpo["chamado_email"] = str(contato_email).strip()
         if contato_telefone:
             corpo["chamado_telefone"] = str(contato_telefone).strip()
+
+        console.print(
+            f"[dim cyan]✔ Prioridade enviada ao Milvus: [Texto: '{prioridade_texto}'][/dim cyan]"
+        )
 
         client = await self._obter_client()
 
