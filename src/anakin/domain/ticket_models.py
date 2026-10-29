@@ -40,6 +40,10 @@ class TicketSummary(BaseModel):
     mesa_trabalho: Optional[str] = None
     categoria_primaria: Optional[str] = None
     categoria_secundaria: Optional[str] = None
+    tipo_ticket: Optional[str] = None
+    dispositivo: Optional[str] = None
+    telefone: Optional[str] = None
+    email_contato: Optional[str] = None
     data_criacao: Optional[str] = None
     data_modificacao: Optional[str] = None
     data_solucao: Optional[str] = None
@@ -76,6 +80,20 @@ class TicketSummary(BaseModel):
         normalized["mesa_trabalho"] = get_first("mesa_trabalho", "mesa_trabalho_nome", "mesa")
         normalized["categoria_primaria"] = get_first("categoria_primaria", "categoria", "categoria_nome")
         normalized["categoria_secundaria"] = get_first("categoria_secundaria", "subcategoria", "subcategoria_nome")
+        normalized["tipo_ticket"] = get_first("tipo_ticket", "tipo", "tipo_chamado", "origem", "tipo_nome")
+        disp_val = get_first("dispositivo", "dispositivo_vinculado", "patrimonio", "hostname")
+        if isinstance(disp_val, dict):
+            normalized["dispositivo"] = disp_val.get("nome") or disp_val.get("hostname") or disp_val.get("patrimonio") or str(disp_val)
+        elif disp_val is not None:
+            normalized["dispositivo"] = str(disp_val)
+        else:
+            normalized["dispositivo"] = None
+
+        tel_val = get_first("telefone", "contato_telefone", "celular")
+        normalized["telefone"] = str(tel_val) if tel_val is not None else None
+
+        email_c = get_first("email_contato", "contato_email", "email_conferencia", "email")
+        normalized["email_contato"] = str(email_c) if email_c is not None else None
         normalized["data_criacao"] = get_first("data_criacao", "criado_em", "data_hora_criacao", "data_abertura")
         normalized["data_modificacao"] = get_first("data_modificacao", "modificado_em", "data_hora_alteracao")
         normalized["data_solucao"] = get_first("data_solucao", "solucionado_em", "data_hora_solucao")

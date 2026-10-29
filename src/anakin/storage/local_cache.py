@@ -104,6 +104,12 @@ class LocalCache:
                 ALTER TABLE chamados ADD COLUMN IF NOT EXISTS email_tecnico VARCHAR;
                 ALTER TABLE chamados ADD COLUMN IF NOT EXISTS raw_json VARCHAR;
                 ALTER TABLE chamados ADD COLUMN IF NOT EXISTS ultima_consulta_direta_em TIMESTAMP;
+                ALTER TABLE chamados ADD COLUMN IF NOT EXISTS tipo_ticket VARCHAR;
+
+                -- Preenchimento automático de tipo_ticket caso raw_json já exista
+                UPDATE chamados 
+                SET tipo_ticket = json_extract_string(raw_json, '$.tipo_ticket') 
+                WHERE (tipo_ticket IS NULL OR tipo_ticket = '') AND raw_json IS NOT NULL;
 
                 -- Cache de acompanhamentos e histórico de chamados (com validade configurável)
                 CREATE TABLE IF NOT EXISTS acompanhamentos_cache (
@@ -246,17 +252,22 @@ class LocalCache:
                     except Exception:
                         raw_json_str = None
 
+                tipo_ticket_str = (
+                    str(t.tipo_ticket) if getattr(t, "tipo_ticket", None) is not None
+                    else None
+                )
+
                 con.execute(
                     """
                     INSERT INTO chamados (
                         id, codigo, cliente, cliente_token, contato, assunto, descricao,
                         status, prioridade, tecnico, email_tecnico, mesa_trabalho, categoria_primaria,
-                        categoria_secundaria, data_criacao, data_modificacao, data_solucao,
+                        categoria_secundaria, tipo_ticket, data_criacao, data_modificacao, data_solucao,
                         status_sla_resposta, status_sla_solucao, raw_json, ultima_consulta_direta_em, atualizado_em
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?,
                         ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?,
                         ?, ?, ?,
                         CASE WHEN ? THEN now() ELSE NULL END,
                         now()
@@ -275,6 +286,7 @@ class LocalCache:
                         mesa_trabalho = EXCLUDED.mesa_trabalho,
                         categoria_primaria = EXCLUDED.categoria_primaria,
                         categoria_secundaria = EXCLUDED.categoria_secundaria,
+                        tipo_ticket = COALESCE(EXCLUDED.tipo_ticket, chamados.tipo_ticket),
                         data_criacao = EXCLUDED.data_criacao,
                         data_modificacao = EXCLUDED.data_modificacao,
                         data_solucao = EXCLUDED.data_solucao,
@@ -299,6 +311,7 @@ class LocalCache:
                         t.mesa_trabalho,
                         t.categoria_primaria,
                         t.categoria_secundaria,
+                        tipo_ticket_str,
                         t.data_criacao,
                         t.data_modificacao,
                         t.data_solucao,
@@ -421,6 +434,66 @@ class LocalCache:
     def listar_operadores_mapeados(self) -> list[tuple[str, str]]:
         """Alias de compatibilidade para listar_operadores_oficiais."""
         return self.listar_operadores_oficiais()
+
+    def obter_catalogo_categorias_e_tipos(self) -> dict[str, Any]:
+        """Consulta o DuckDB e retorna o catálogo real de tipos e categorias homologadas.
+
+        Executa:
+            SELECT DISTINCT tipo_ticket, categoria_primaria, categoria_secundaria
+            FROM chamados
+            WHERE categoria_primaria IS NOT NULL AND tipo_ticket IS NOT NULL;
+        """
+        query = """
+            SELECT DISTINCT 
+                TRIM(tipo_ticket) AS tipo_ticket, 
+                TRIM(categoria_primaria) AS categoria_primaria, 
+                TRIM(COALESCE(categoria_secundaria, '')) AS categoria_secundaria
+            FROM chamados
+            WHERE categoria_primaria IS NOT NULL 
+              AND TRIM(categoria_primaria) != ''
+              AND tipo_ticket IS NOT NULL 
+              AND TRIM(tipo_ticket) != ''
+            ORDER BY tipo_ticket, categoria_primaria, categoria_secundaria;
+        """
+        with self._obter_conexao() as con:
+            rows = con.execute(query).fetchall()
+
+        tipos_set: set[str] = set()
+        categorias_map: dict[str, list[str]] = {}
+        arvore_lista: list[dict[str, str]] = []
+
+        for r_tipo, r_cat1, r_cat2 in rows:
+            if not r_tipo or not r_cat1:
+                continue
+            tipos_set.add(r_tipo)
+
+            if r_cat1 not in categorias_map:
+                categorias_map[r_cat1] = []
+            if r_cat2 and r_cat2 not in categorias_map[r_cat1]:
+                categorias_map[r_cat1].append(r_cat2)
+
+            arvore_lista.append({
+                "tipo_ticket": r_tipo,
+                "categoria_primaria": r_cat1,
+                "categoria_secundaria": r_cat2,
+            })
+
+        # Formata texto enxuto para injeção direta no prompt da IA
+        linhas_texto: list[str] = []
+        for cat1 in sorted(categorias_map.keys()):
+            subs = categorias_map[cat1]
+            if subs:
+                subs_str = ", ".join(f"'{s}'" for s in sorted(subs))
+                linhas_texto.append(f"- Categoria Primária: '{cat1}' -> Subcategorias: [{subs_str}]")
+            else:
+                linhas_texto.append(f"- Categoria Primária: '{cat1}' (Sem subcategorias)")
+
+        return {
+            "tipos": sorted(list(tipos_set)),
+            "categorias": categorias_map,
+            "arvore": arvore_lista,
+            "texto_formatado": "\n".join(linhas_texto),
+        }
 
     def listar_mesas_trabalho(self) -> list[str]:
         """Lista todas as mesas de trabalho únicas cadastradas no histórico do DuckDB."""

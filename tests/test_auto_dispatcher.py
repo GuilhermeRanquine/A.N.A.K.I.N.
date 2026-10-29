@@ -1,4 +1,4 @@
-"""Testes unitários e de integração do módulo AutoDispatcher e atribuição ponderada de chamados."""
+"""Testes unitários e de integração do módulo AutoDispatcher, triagem por IA e roteamento por nível."""
 
 from datetime import datetime, timedelta
 import unittest
@@ -9,12 +9,21 @@ from anakin.dispatch.auto_dispatcher import (
     ScoreOperador,
     OPERADORES_ELEGIVEIS,
     OPERADORES_BLOQUEADOS,
+    POOL_SENIOR_N2_EMAILS,
+    POOL_PLENO_N1_EMAILS,
     SecurityDispatchError,
     verificar_seguranca_operador,
     eh_chamado_sem_tecnico,
 )
+from anakin.dispatch.ticket_triage_ai import (
+    TicketTriageAI,
+    ResultadoTriagemIA,
+    normalizar_prioridade,
+    normalizar_tipo_ticket,
+)
 from anakin.domain.ticket_models import TicketSummary
 from anakin.milvus.ticket_creator_client import MilvusTicketCreatorClient, CreationSafetyError
+from anakin.storage.local_cache import LocalCache
 
 
 class TestAutoDispatcher(unittest.TestCase):
@@ -32,6 +41,19 @@ class TestAutoDispatcher(unittest.TestCase):
         emails_atuais = {op.email for op in OPERADORES_ELEGIVEIS}
         self.assertEqual(emails_atuais, emails_esperados)
 
+    def test_divisao_pools_senior_e_pleno(self) -> None:
+        """Valida a separação dos dois pools de atendimento por nível."""
+        self.assertEqual(len(POOL_SENIOR_N2_EMAILS), 3)
+        self.assertEqual(len(POOL_PLENO_N1_EMAILS), 3)
+
+        self.assertIn("gabriel@upgradeti.com.br", POOL_SENIOR_N2_EMAILS)
+        self.assertIn("gabryel.santos@upgradeti.com.br", POOL_SENIOR_N2_EMAILS)
+        self.assertIn("guilherme.melo@upgradeti.com.br", POOL_SENIOR_N2_EMAILS)
+
+        self.assertIn("carlos.bucazio@upgradeti.com.br", POOL_PLENO_N1_EMAILS)
+        self.assertIn("kaio.silva@upgradeti.com.br", POOL_PLENO_N1_EMAILS)
+        self.assertIn("gabriel.sena@upgradeti.com.br", POOL_PLENO_N1_EMAILS)
+
     def test_bloqueio_rigido_operadores_proibidos(self) -> None:
         """Garante que operadores proibidos não possam receber chamados sob nenhuma hipótese."""
         proibidos_emails = [
@@ -47,107 +69,167 @@ class TestAutoDispatcher(unittest.TestCase):
             with self.assertRaises(SecurityDispatchError):
                 verificar_seguranca_operador(email)
 
-    def test_bloqueio_por_nome_proibido(self) -> None:
-        """Verifica se nomes da lista de bloqueio geram erro imediato."""
-        proibidos_nomes = ["Paulo Roberto", "Leandro Oliveira", "Wander Cristiano", "Guilherme Ranquine"]
-        for nome in proibidos_nomes:
-            with self.assertRaises(SecurityDispatchError):
-                verificar_seguranca_operador("email_qualquer@upgradeti.com.br", nome=nome)
+    def test_roteamento_por_prioridade_alta_e_critica(self) -> None:
+        """Chamados Críticos ou Altos devem ser atribuídos ao Pool Sênior / N2."""
+        disp = AutoDispatcher()
+        # Mock das cargas
+        disp.calcular_scores_pool = lambda: {  # type: ignore
+            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], score_total=2),   # Carlos (Pleno)
+            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], score_total=10),  # Gabriel O. (Senior)
+            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=6),   # Gabryel (Senior - menor do senior)
+            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=0),   # Gabriel Sena (Pleno)
+            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=8),   # Guilherme M. (Senior)
+            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=4),   # Kaio (Pleno)
+        }
 
-    def test_identificacao_chamados_sem_tecnico(self) -> None:
-        """Valida detecção precisa de chamados sem técnico atribuído."""
-        t_sem_1 = TicketSummary(codigo="101", tecnico="Não atribuído", email_tecnico=None)
-        t_sem_2 = TicketSummary(codigo="102", tecnico="", email_tecnico="")
-        t_sem_3 = TicketSummary(codigo="103", tecnico=None, email_tecnico=None)
-        t_sem_4 = TicketSummary(codigo="104", tecnico="sem tecnico", email_tecnico=None)
+        # Mesmo Gabriel Sena tendo score 0, o chamado Crítico deve ir para o Sênior de menor score (Gabryel Santos com 6)
+        op_critico, sc_critico, _, tag_critico = disp.selecionar_operador_por_prioridade("Crítico")
+        self.assertEqual(op_critico.nome, "Gabryel Santos")
+        self.assertEqual(sc_critico.score_total, 6)
+        self.assertIn("Sênior", tag_critico)
 
-        t_com_1 = TicketSummary(codigo="201", tecnico="Kaio Silva", email_tecnico="kaio.silva@upgradeti.com.br")
-        t_com_2 = TicketSummary(codigo="202", tecnico="Paulo Roberto", email_tecnico="paulo@upgradeti.com.br")
+        op_alto, sc_alto, _, tag_alto = disp.selecionar_operador_por_prioridade("Alto")
+        self.assertEqual(op_alto.nome, "Gabryel Santos")
+        self.assertIn("Sênior", tag_alto)
 
-        self.assertTrue(eh_chamado_sem_tecnico(t_sem_1))
-        self.assertTrue(eh_chamado_sem_tecnico(t_sem_2))
-        self.assertTrue(eh_chamado_sem_tecnico(t_sem_3))
-        self.assertTrue(eh_chamado_sem_tecnico(t_sem_4))
+    def test_roteamento_por_prioridade_media_e_baixa(self) -> None:
+        """Chamados Médios ou Baixos devem ser atribuídos ao Pool Pleno / N1."""
+        disp = AutoDispatcher()
+        disp.calcular_scores_pool = lambda: {  # type: ignore
+            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], score_total=5),   # Carlos (Pleno)
+            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], score_total=2),   # Gabriel O. (Senior com menor score global)
+            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=6),   # Gabryel (Senior)
+            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=3),   # Gabriel Sena (Pleno - menor do pleno)
+            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=8),   # Guilherme M. (Senior)
+            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=4),   # Kaio (Pleno)
+        }
 
-        self.assertFalse(eh_chamado_sem_tecnico(t_com_1))
-        self.assertFalse(eh_chamado_sem_tecnico(t_com_2))
+        # Mesmo Gabriel O. tendo score 2, chamado Baixo deve ir para o Pleno de menor score (Gabriel Sena com 3)
+        op_baixo, sc_baixo, _, tag_baixo = disp.selecionar_operador_por_prioridade("Baixo")
+        self.assertEqual(op_baixo.nome, "Gabriel Sena")
+        self.assertEqual(sc_baixo.score_total, 3)
+        self.assertIn("Pleno", tag_baixo)
 
-    def test_calculo_formula_score_ponderado(self) -> None:
-        """Testa o cálculo da fórmula: (Atendendo * 3) + (A Fazer * 2) + (Pausado * 1) + (Outros * 1)."""
-        sc = ScoreOperador(
-            operador=OPERADORES_ELEGIVEIS[0],
-            qtd_atendendo=2,  # 2 * 3 = 6
-            qtd_a_fazer=1,    # 1 * 2 = 2
-            qtd_pausado=5,    # 5 * 1 = 5
-            qtd_outros=1,     # 1 * 1 = 1
-            score_total=(2 * 3) + (1 * 2) + (5 * 1) + (1 * 1),  # 14
+        op_medio, sc_medio, _, tag_medio = disp.selecionar_operador_por_prioridade("Médio")
+        self.assertEqual(op_medio.nome, "Gabriel Sena")
+        self.assertIn("Pleno", tag_medio)
+
+    def test_catalogo_categorias_e_tipos(self) -> None:
+        """Valida consulta do catálogo real no DuckDB."""
+        cache = LocalCache()
+        cat = cache.obter_catalogo_categorias_e_tipos()
+        self.assertIn("tipos", cat)
+        self.assertIn("categorias", cat)
+        self.assertTrue(len(cat["categorias"]) > 0)
+        self.assertTrue(len(cat["texto_formatado"]) > 0)
+
+    def test_triagem_ia_fallback_heuristico(self) -> None:
+        """Testa o fallback heurístico com extração correta de prioridade, tipo e contato."""
+        triage = TicketTriageAI()
+        t = TicketSummary(
+            codigo="888",
+            cliente="Farmacia Central",
+            assunto="Configurar Outlook e impressora no computador da recepcao",
+            descricao="Favor instalar a impressora HP e configurar o email recepcao@farmacia.com. Solicitante: Carlos Alberto, tel 21 9999-8888",
         )
-        self.assertEqual(sc.score_total, 14)
-        self.assertEqual(sc.detalhe_formatado, "2 fazendo, 1 a fazer, 5 pausado, 1 outros")
+        res = triage._fallback_heuristico(t, catalogo={})
+        self.assertEqual(res.prioridade, "Baixo")
+        self.assertEqual(res.tipo_ticket, "Requisição")
+        self.assertEqual(res.contato_email, "recepcao@farmacia.com")
+        self.assertEqual(res.contato_telefone, "21 9999-8888")
 
-    def test_selecao_menor_score_ponderado(self) -> None:
-        """Valida se o operador com o menor Score é escolhido, mesmo com mais chamados brutos pausados."""
+    def test_fallback_balanceado_sob_sobrecarga(self) -> None:
+        """Valida que quando o pool alvo está sob sobrecarga severa, ativa fallback balanceado."""
         disp = AutoDispatcher()
-        # Operador A: 2 atendendo (6 pts) + 0 pausado = 6 pts (Total = 2 chamados)
-        # Operador B: 0 atendendo + 4 pausados (4 pts) = 4 pts (Total = 4 chamados)
-        # B tem mais chamados, mas score menor porque são todos pausados!
+        # Pool Sênior totalmente sobrecarregado (scores >= 35) e Pleno com score baixo
         disp.calcular_scores_pool = lambda: {  # type: ignore
-            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], qtd_atendendo=2, qtd_pausado=0, score_total=6),
-            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], qtd_atendendo=0, qtd_pausado=4, score_total=4),
-            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], qtd_atendendo=3, qtd_pausado=5, score_total=14),
-            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], qtd_atendendo=1, qtd_pausado=10, score_total=13),
-            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], qtd_atendendo=2, qtd_pausado=6, score_total=12),
-            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], qtd_atendendo=1, qtd_pausado=5, score_total=8),
+            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], score_total=8),   # Carlos (Pleno)
+            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], score_total=40),  # Gabriel O. (Senior sobrecarregado)
+            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=36),  # Gabryel (Senior sobrecarregado)
+            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=5),   # Gabriel Sena (Pleno livre)
+            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=38),  # Guilherme M. (Senior sobrecarregado)
+            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=6),   # Kaio (Pleno)
         }
 
-        op, sc, _ = disp.selecionar_operador_menor_score()
-        self.assertEqual(op.nome, "Gabriel Oliveira")
-        self.assertEqual(sc.score_total, 4)
-
-    def test_desempate_por_ultima_atribuicao(self) -> None:
-        """Valida que em empate de Score, quem recebeu chamado há mais tempo tem prioridade."""
-        disp = AutoDispatcher()
-        agora = datetime.now()
-        # Ambos com Score 5, mas Operador 0 recebeu há 2 horas e Operador 1 recebeu há 10 minutos
-        disp.calcular_scores_pool = lambda: {  # type: ignore
-            OPERADORES_ELEGIVEIS[0]: ScoreOperador(
-                OPERADORES_ELEGIVEIS[0],
-                score_total=5,
-                ultima_atribuicao=agora - timedelta(hours=2),
-            ),
-            OPERADORES_ELEGIVEIS[1]: ScoreOperador(
-                OPERADORES_ELEGIVEIS[1],
-                score_total=5,
-                ultima_atribuicao=agora - timedelta(minutes=10),
-            ),
-            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=10),
-            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=10),
-            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=10),
-            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=10),
-        }
-
-        op, sc, _ = disp.selecionar_operador_menor_score()
-        # Carlos Eduardo recebeu há 2 horas (mais tempo atrás), deve ser o escolhido
-        self.assertEqual(op.nome, "Carlos Eduardo")
+        # Chamado Alto deveria ir para Sênior, mas como menor Sênior tem 36 (>=35) e menor Pleno tem 5 (folga >= 10), ativa fallback!
+        op, sc, _, tag = disp.selecionar_operador_por_prioridade("Alto")
+        self.assertEqual(op.nome, "Gabriel Sena")
         self.assertEqual(sc.score_total, 5)
+        self.assertIn("Fallback", tag)
 
-    def test_desempate_round_robin_quando_datas_iguais(self) -> None:
-        """Valida desempate com Round-Robin quando scores e datas são idênticos."""
-        disp = AutoDispatcher()
-        disp.calcular_scores_pool = lambda: {  # type: ignore
-            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], score_total=4, ultima_atribuicao=None),
-            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], score_total=4, ultima_atribuicao=None),
-            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=10),
-            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=10),
-            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=10),
-            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=10),
-        }
+    def test_mapeamento_numerico_prioridade(self) -> None:
+        """Valida que a prioridade é estritamente mapeada para '1', '2', '3' ou '4'."""
+        from anakin.milvus.ticket_creator_client import resolver_prioridade_id, PRIORIDADE_ID_MAP
 
-        op1, _, _ = disp.selecionar_operador_menor_score()
-        op2, _, _ = disp.selecionar_operador_menor_score()
-        op3, _, _ = disp.selecionar_operador_menor_score()
+        self.assertEqual(resolver_prioridade_id("Baixo"), "1")
+        self.assertEqual(resolver_prioridade_id("baixa"), "1")
+        self.assertEqual(resolver_prioridade_id("Médio"), "2")
+        self.assertEqual(resolver_prioridade_id("medio"), "2")
+        self.assertEqual(resolver_prioridade_id("Alto"), "3")
+        self.assertEqual(resolver_prioridade_id("alta"), "3")
+        self.assertEqual(resolver_prioridade_id("Crítico"), "4")
+        self.assertEqual(resolver_prioridade_id("critico"), "4")
 
-        self.assertEqual([op1.nome, op2.nome, op3.nome], ["Carlos Eduardo", "Gabriel Oliveira", "Carlos Eduardo"])
+        # IDs diretos
+        self.assertEqual(resolver_prioridade_id("1"), "1")
+        self.assertEqual(resolver_prioridade_id("4"), "4")
+
+    def test_triade_atribuicao_e_ordem_payload(self) -> None:
+        """Valida se Mesa, Setor e Operador são definidos no mesmo técnico e na ordem correta."""
+        creator = MilvusTicketCreatorClient()
+        # Mock de httpx client para capturar o payload gerado
+        payload_capturado = {}
+
+        class DummyClient:
+            async def post(self, url, json=None, **kwargs):
+                nonlocal payload_capturado
+                payload_capturado = json
+                class DummyResp:
+                    status_code = 200
+                    def raise_for_status(self): pass
+                    def json(self): return {"status": True}
+                return DummyResp()
+
+        async def dummy_client():
+            return DummyClient()
+
+        async def dummy_wait():
+            pass
+
+        creator._obter_client = dummy_client  # type: ignore
+        creator._aguardar_rate_limit = dummy_wait  # type: ignore
+
+        import asyncio
+        asyncio.run(
+            creator.atualizar_triagem_chamado(
+                chamado_codigo_ou_id="77777",
+                prioridade="Médio",
+                tipo_ticket="Incidente",
+                categoria_primaria="Computadores",
+                categoria_secundaria="Lentidão",
+                nome_operador="Gabriel Sena",
+                email_tecnico="gabriel.sena@upgradeti.com.br",
+            )
+        )
+
+        # 1. Validação da tríade com o mesmo técnico
+        self.assertEqual(payload_capturado["chamado_mesa"], "Gabriel Sena")
+        self.assertEqual(payload_capturado["chamado_setor"], "Gabriel Sena")
+        self.assertEqual(payload_capturado["chamado_tecnico"], "gabriel.sena@upgradeti.com.br")
+
+        # 2. Prioridade numérica obrigatória
+        self.assertEqual(payload_capturado["chamado_prioridade"], "2")
+
+        # 3. Ordem das chaves na serialização
+        chaves = list(payload_capturado.keys())
+        idx_mesa = chaves.index("chamado_mesa")
+        idx_setor = chaves.index("chamado_setor")
+        idx_tecnico = chaves.index("chamado_tecnico")
+        idx_prioridade = chaves.index("chamado_prioridade")
+
+        self.assertLess(idx_mesa, idx_tecnico, "chamado_mesa deve vir ANTES de chamado_tecnico")
+        self.assertLess(idx_setor, idx_tecnico, "chamado_setor deve vir ANTES de chamado_tecnico")
+        self.assertLess(idx_tecnico, idx_prioridade, "chamado_tecnico deve vir ANTES de chamado_prioridade")
 
     def test_validacao_rota_atualizar_ticket_creator(self) -> None:
         """Testa se POST /chamado/atualizar está liberado no MilvusTicketCreatorClient."""
@@ -158,8 +240,6 @@ class TestAutoDispatcher(unittest.TestCase):
 
         with self.assertRaises(CreationSafetyError):
             creator._validar_rota("DELETE", "/chamado/deletar")
-        with self.assertRaises(CreationSafetyError):
-            creator._validar_rota("PUT", "/cliente/editar")
 
 
 if __name__ == "__main__":

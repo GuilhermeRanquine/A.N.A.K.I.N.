@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+import unicodedata
 import duckdb
 from rich.console import Console
 
@@ -76,6 +77,21 @@ OPERADORES_ELEGIVEIS: list[OperadorElegivel] = [
 ]
 
 OPERADORES_ELEGIVEIS_EMAILS: set[str] = {op.email.lower() for op in OPERADORES_ELEGIVEIS}
+
+# Divisão dos Pools de Atendimento por Nível / Prioridade
+# Pool Prioridade Alta e Crítica (Sênior / N2)
+POOL_SENIOR_N2_EMAILS: set[str] = {
+    "gabriel@upgradeti.com.br",
+    "gabryel.santos@upgradeti.com.br",
+    "guilherme.melo@upgradeti.com.br",
+}
+
+# Pool Prioridade Média e Baixa (Pleno / N1)
+POOL_PLENO_N1_EMAILS: set[str] = {
+    "carlos.bucazio@upgradeti.com.br",
+    "kaio.silva@upgradeti.com.br",
+    "gabriel.sena@upgradeti.com.br",
+}
 
 # 2. Operadores estritamente bloqueados da fila automática
 OPERADORES_BLOQUEADOS: set[str] = {
@@ -328,57 +344,104 @@ class AutoDispatcher:
         scores = self.calcular_scores_pool()
         return {op: sc.total_chamados_abertos for op, sc in scores.items()}
 
+    def _desempatar_candidatos(self, candidatos_scores: list[ScoreOperador]) -> ScoreOperador:
+        """Desempata candidatos com o mesmo Score mínimo por última atribuição e Round-Robin."""
+        if len(candidatos_scores) == 1:
+            return candidatos_scores[0]
+
+        def chave_desempate(sc: ScoreOperador) -> tuple[datetime, int]:
+            dt = sc.ultima_atribuicao or datetime.min
+            return (dt, sc.total_chamados_abertos)
+
+        candidatos_ordenados = sorted(candidatos_scores, key=chave_desempate)
+        melhor_chave = chave_desempate(candidatos_ordenados[0])
+        iguais_na_data = [sc for sc in candidatos_ordenados if chave_desempate(sc) == melhor_chave]
+
+        if len(iguais_na_data) == 1:
+            return iguais_na_data[0]
+
+        idx = self._round_robin_counter % len(iguais_na_data)
+        escolhido = iguais_na_data[idx]
+        self._round_robin_counter += 1
+        return escolhido
+
     def selecionar_operador_menor_score(self) -> tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador]]:
-        """Seleciona o operador elegível do pool com o MENOR Score de Carga.
-
-        Regra de Desempate:
-            Se dois ou mais operadores tiverem o mesmo Score mínimo:
-            1. Escolhe aquele que foi atribuído a um chamado há mais tempo (data mais antiga / vazia).
-            2. Em caso de empate absoluto de data, utiliza o Round-Robin sequencial.
-
-        Returns:
-            tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador]]:
-                - Operador selecionado
-                - Objeto ScoreOperador com dados completos e detalhe matemático
-                - Lista ordenada de todos os operadores por score crescente
-        """
+        """Seleciona o operador elegível do pool global com o MENOR Score de Carga."""
         scores_map = self.calcular_scores_pool()
         todos_scores = list(scores_map.values())
-
-        # Ordenação geral informativa
         todos_scores.sort(key=lambda sc: (sc.score_total, sc.total_chamados_abertos))
 
-        # Encontra o menor score do pool
         menor_score = min(sc.score_total for sc in todos_scores)
         candidatos_empatados = [sc for sc in todos_scores if sc.score_total == menor_score]
 
-        if len(candidatos_empatados) == 1:
-            escolhido_score = candidatos_empatados[0]
-        else:
-            # Desempate 1: operador atribuído há mais tempo
-            # Quem tem ultima_atribuicao vazia/None recebe a maior prioridade (representado por datetime.min)
-            def chave_desempate(sc: ScoreOperador) -> tuple[datetime, int]:
-                dt = sc.ultima_atribuicao or datetime.min
-                return (dt, sc.total_chamados_abertos)
-
-            candidatos_empatados.sort(key=chave_desempate)
-
-            # Verifica se há empate na data mais antiga
-            melhor_data = chave_desempate(candidatos_empatados[0])
-            iguais_na_data = [sc for sc in candidatos_empatados if chave_desempate(sc) == melhor_data]
-
-            if len(iguais_na_data) == 1:
-                escolhido_score = iguais_na_data[0]
-            else:
-                # Desempate 2: Round-Robin sequencial entre os estritamente empatados
-                idx = self._round_robin_counter % len(iguais_na_data)
-                escolhido_score = iguais_na_data[idx]
-                self._round_robin_counter += 1
-
-        # Validação rígida de segurança
+        escolhido_score = self._desempatar_candidatos(candidatos_empatados)
         verificar_seguranca_operador(escolhido_score.operador.email, escolhido_score.operador.nome)
 
         return escolhido_score.operador, escolhido_score, todos_scores
+
+    def selecionar_operador_por_prioridade(
+        self,
+        prioridade: str,
+    ) -> tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador], str]:
+        """Roteamento por Nível de Prioridade (Tiered Dispatching).
+
+        - Prioridade 'Crítico' ou 'Alto': Pool Sênior / N2
+            (Gabriel Oliveira, Gabryel Santos, Guilherme Maganha)
+        - Prioridade 'Médio' ou 'Baixo': Pool Pleno / N1
+            (Carlos Bucazio, Kaio Silva, Gabriel Sena)
+
+        Caso todos os técnicos do pool alvo estejam sob sobrecarga severa (score >= 35)
+        e o outro pool possua operador com menor carga e folga >= 10 pts,
+        ativa o Fallback Balanceado entre os pools.
+
+        Returns:
+            tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador], str]:
+                - Operador selecionado
+                - Objeto ScoreOperador
+                - Ranking de scores dos operadores do pool consultado
+                - Tag informativa do pool utilizado (ex: 'Pool Sênior / N2')
+        """
+        nfkd = unicodedata.normalize("NFKD", str(prioridade or "médio"))
+        p_clean = "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+        eh_alta_ou_critica = "crit" in p_clean or "alt" in p_clean
+
+        scores_map = self.calcular_scores_pool()
+
+        # Separação dos scores por pool
+        scores_senior = [sc for op, sc in scores_map.items() if op.email.lower() in POOL_SENIOR_N2_EMAILS]
+        scores_pleno = [sc for op, sc in scores_map.items() if op.email.lower() in POOL_PLENO_N1_EMAILS]
+
+        scores_senior.sort(key=lambda sc: (sc.score_total, sc.total_chamados_abertos))
+        scores_pleno.sort(key=lambda sc: (sc.score_total, sc.total_chamados_abertos))
+
+        if eh_alta_ou_critica:
+            pool_alvo = scores_senior
+            pool_fallback = scores_pleno
+            nome_pool_alvo = "Pool Sênior / N2"
+            nome_pool_fallback = "Fallback Balanceado (Sênior -> Pleno)"
+        else:
+            pool_alvo = scores_pleno
+            pool_fallback = scores_senior
+            nome_pool_alvo = "Pool Pleno / N1"
+            nome_pool_fallback = "Fallback Balanceado (Pleno -> Sênior)"
+
+        min_score_alvo = pool_alvo[0].score_total if pool_alvo else 999
+        min_score_fallback = pool_fallback[0].score_total if pool_fallback else 999
+
+        # Avaliação de sobrecarga severa para fallback balanceado
+        if min_score_alvo >= 35 and (min_score_alvo - min_score_fallback) >= 10:
+            candidatos_empatados = [sc for sc in pool_fallback if sc.score_total == min_score_fallback]
+            escolhido_score = self._desempatar_candidatos(candidatos_empatados)
+            tag_pool = nome_pool_fallback
+            ranking_retorno = pool_fallback
+        else:
+            candidatos_empatados = [sc for sc in pool_alvo if sc.score_total == min_score_alvo]
+            escolhido_score = self._desempatar_candidatos(candidatos_empatados)
+            tag_pool = nome_pool_alvo
+            ranking_retorno = pool_alvo
+
+        verificar_seguranca_operador(escolhido_score.operador.email, escolhido_score.operador.nome)
+        return escolhido_score.operador, escolhido_score, ranking_retorno, tag_pool
 
     def selecionar_operador_menor_carga(self) -> tuple[OperadorElegivel, int, list[tuple[str, int]]]:
         """Alias retrocompatível delegando para a lógica moderna de menor Score."""
@@ -483,12 +546,123 @@ class AutoDispatcher:
 
         return sucesso
 
+    async def despachar_chamado_triado(
+        self,
+        chamado: TicketSummary,
+        operador: OperadorElegivel,
+        triagem: Any,
+        score_info: Optional[ScoreOperador] = None,
+        tag_pool: str = "",
+        creator_client: Optional[MilvusTicketCreatorClient] = None,
+        simulacao: bool = False,
+    ) -> bool:
+        """Executa a atribuição completa de um chamado triado por IA, atualizando Milvus e DuckDB."""
+        verificar_seguranca_operador(operador.email, operador.nome)
+
+        codigo_str = str(chamado.codigo or chamado.id or "Desconhecido")
+        cliente_str = str(chamado.cliente or "Cliente não informado")
+        assunto_str = str(chamado.assunto or "Sem assunto")
+        horario_str = datetime.now().strftime("%H:%M:%S")
+
+        score_pts = score_info.score_total if score_info else 0
+        tag_pool_str = f" ({tag_pool})" if tag_pool else ""
+        subcat = getattr(triagem, "categoria_secundaria", None)
+        subcat_str = f" / {subcat}" if subcat else ""
+        tipo_str = getattr(triagem, "tipo_ticket", "Incidente")
+        cat1_str = getattr(triagem, "categoria_primaria", "Geral")
+        prio_str = getattr(triagem, "prioridade", "Médio")
+        prio_id = getattr(triagem, "prioridade_id", None) or "2"
+
+        justificativa_fmt = (
+            f"Prioridade: [{prio_str} (ID: {prio_id})] | "
+            f"Mesa: [{operador.nome}] | Setor: [{operador.nome}] | "
+            f"Operador: [{operador.nome} ({operador.email})]{tag_pool_str} | "
+            f"Tipo: [{tipo_str}] | Categoria: [{cat1_str}{subcat_str}] | "
+            f"Score: {score_pts} pts"
+        )
+
+        if simulacao:
+            self._deltas_sessao[operador.email]["a_fazer"] += 1
+            self._ultima_atribuicao_sessao[operador.email] = datetime.now()
+
+            registro = AtribuicaoRegistro(
+                horario=horario_str,
+                codigo=codigo_str,
+                cliente=cliente_str,
+                assunto=assunto_str,
+                operador_nome=operador.nome,
+                operador_email=operador.email,
+                score_justificativa=justificativa_fmt,
+                status="[yellow]Simulado[/yellow]",
+                simulacao=True,
+            )
+            self.historico_atribuicoes.insert(0, registro)
+            if len(self.historico_atribuicoes) > 20:
+                self.historico_atribuicoes.pop()
+            return True
+
+        if creator_client is None:
+            creator_client = MilvusTicketCreatorClient(settings=self.settings)
+
+        identificador = chamado.id or chamado.codigo
+        if not identificador:
+            console.print(f"[bold red]Erro: Chamado sem ID ou Código válido para atribuição.[/bold red]")
+            return False
+
+        sucesso = await creator_client.atualizar_triagem_chamado(
+            chamado_codigo_ou_id=identificador,
+            prioridade=prio_str,
+            tipo_ticket=tipo_str,
+            categoria_primaria=cat1_str,
+            categoria_secundaria=subcat,
+            nome_operador=operador.nome,
+            email_tecnico=operador.email,
+            contato_nome=getattr(triagem, "contato_nome", None),
+            contato_email=getattr(triagem, "contato_email", None),
+            contato_telefone=getattr(triagem, "contato_telefone", None),
+        )
+
+        status_fmt = "[green]Sucesso[/green]" if sucesso else "[red]Falha[/red]"
+        registro = AtribuicaoRegistro(
+            horario=horario_str,
+            codigo=codigo_str,
+            cliente=cliente_str,
+            assunto=assunto_str,
+            operador_nome=operador.nome,
+            operador_email=operador.email,
+            score_justificativa=justificativa_fmt,
+            status=status_fmt,
+            simulacao=False,
+        )
+        self.historico_atribuicoes.insert(0, registro)
+        if len(self.historico_atribuicoes) > 20:
+            self.historico_atribuicoes.pop()
+
+        if sucesso:
+            self._atualizar_chamado_duckdb(
+                identificador,
+                operador,
+                prioridade=prio_str,
+                tipo_ticket=tipo_str,
+                categoria_primaria=cat1_str,
+                categoria_secundaria=subcat,
+                contato_nome=getattr(triagem, "contato_nome", None),
+            )
+            self._ultima_atribuicao_sessao[operador.email] = datetime.now()
+
+        return sucesso
+
     def _atualizar_chamado_duckdb(
         self,
         chamado_id_ou_codigo: str | int,
         operador: OperadorElegivel,
+        prioridade: Optional[str] = None,
+        tipo_ticket: Optional[str] = None,
+        categoria_primaria: Optional[str] = None,
+        categoria_secundaria: Optional[str] = None,
+        contato_nome: Optional[str] = None,
     ) -> None:
-        """Persiste a atribuição do chamado no DuckDB local com status 'A fazer'."""
+        """Persiste a atribuição e dados de triagem do chamado no DuckDB local."""
         val = str(chamado_id_ou_codigo).lstrip("#").strip()
         try:
             with self._obter_conexao(read_only=False) as con:
@@ -497,11 +671,28 @@ class AutoDispatcher:
                     UPDATE chamados
                     SET tecnico = ?,
                         email_tecnico = ?,
+                        mesa_trabalho = ?,
                         status = 'A fazer',
+                        prioridade = COALESCE(?, prioridade),
+                        tipo_ticket = COALESCE(?, tipo_ticket),
+                        categoria_primaria = COALESCE(?, categoria_primaria),
+                        categoria_secundaria = COALESCE(?, categoria_secundaria),
+                        contato = COALESCE(?, contato),
                         atualizado_em = now()
                     WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?
                     """,
-                    [operador.nome, operador.email, val, val],
+                    [
+                        operador.nome,
+                        operador.email,
+                        operador.nome,
+                        prioridade,
+                        tipo_ticket,
+                        categoria_primaria,
+                        categoria_secundaria,
+                        contato_nome,
+                        val,
+                        val,
+                    ],
                 )
         except Exception as e:
             console.print(f"[dim yellow]Aviso ao atualizar chamado no DuckDB: {e}[/dim yellow]")

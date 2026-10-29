@@ -1,7 +1,7 @@
-"""A.N.A.K.I.N - Despachante Automático de Chamados (Upgrade TI).
+"""A.N.A.K.I.N - Despachante Automático e Triagem com IA (Upgrade TI).
 
-Script executável ao vivo para monitoramento contínuo e distribuição automática
-de chamados sem técnico, utilizando o Algoritmo de Fila Ponderada por Carga (Score de Ocupação).
+Script executável ao vivo para monitoramento contínuo, triagem autônoma via IA
+e roteamento balanceado por prioridade/nível técnico (Tiered Dispatching).
 
 Uso:
     python dispatcher_aovivo.py
@@ -51,8 +51,11 @@ from anakin.dispatch.auto_dispatcher import (
     OperadorElegivel,
     ScoreOperador,
     OPERADORES_ELEGIVEIS,
+    POOL_SENIOR_N2_EMAILS,
+    POOL_PLENO_N1_EMAILS,
     AtribuicaoRegistro,
 )
+from anakin.dispatch.ticket_triage_ai import TicketTriageAI, ResultadoTriagemIA
 from anakin.domain.ticket_models import TicketSummary
 from anakin.milvus.readonly_client import MilvusReadOnlyClient
 from anakin.milvus.ticket_creator_client import MilvusTicketCreatorClient
@@ -66,19 +69,20 @@ def criar_tabela_pool(
     proximo_operador: OperadorElegivel | None,
     settings: Settings,
 ) -> Table:
-    """Gera a tabela do Pool Ativo com o Score de Ocupação Ponderado."""
+    """Gera a tabela do Pool Ativo com o Score de Ocupação Ponderado e indicação de Nível."""
     col_atendendo = f"Atendendo (x{settings.peso_status_atendendo})"
     col_a_fazer = f"A Fazer (x{settings.peso_status_a_fazer})"
     col_pausado = f"Pausado (x{settings.peso_status_pausado})"
 
     tb = Table(
-        title="[bold white]Pool Oficial de Distribuição Ponderada (Upgrade TI - 6 Operadores)[/bold white]",
+        title="[bold white]Pool de Atendimento por Nível & Score de Carga (Upgrade TI)[/bold white]",
         box=box.ROUNDED,
         border_style="cyan",
         header_style="bold cyan",
         expand=True,
     )
     tb.add_column("Operador", style="bold white", ratio=3)
+    tb.add_column("Nível / Fila", justify="center", style="dim cyan", ratio=2)
     tb.add_column(col_atendendo, justify="center", style="bold red", ratio=2)
     tb.add_column(col_a_fazer, justify="center", style="bold yellow", ratio=2)
     tb.add_column(col_pausado, justify="center", style="dim white", ratio=2)
@@ -91,6 +95,12 @@ def criar_tabela_pool(
             continue
 
         eh_proximo = proximo_operador is not None and op.email == proximo_operador.email
+
+        # Nível técnico do pool
+        if op.email.lower() in POOL_SENIOR_N2_EMAILS:
+            nivel_badge = "[bold magenta]Sênior / N2[/bold magenta]"
+        else:
+            nivel_badge = "[cyan]Pleno / N1[/cyan]"
 
         # Formatação de cores e badges do Score
         if sc.score_total == 0:
@@ -112,6 +122,7 @@ def criar_tabela_pool(
         nome_fmt = f"[{estilo_linha}]{op.nome}[/{estilo_linha}]" if estilo_linha else op.nome
         tb.add_row(
             nome_fmt,
+            nivel_badge,
             str(sc.qtd_atendendo),
             str(sc.qtd_a_fazer),
             str(sc.qtd_pausado),
@@ -125,7 +136,7 @@ def criar_tabela_pool(
 def criar_tabela_historico(historico: list[AtribuicaoRegistro]) -> Table:
     """Gera a tabela das últimas atribuições realizadas na sessão."""
     tb = Table(
-        title="[bold white]Últimas Atribuições Realizadas (Sessão Atual)[/bold white]",
+        title="[bold white]Últimas Triagens e Atribuições Realizadas (Sessão Atual)[/bold white]",
         box=box.ROUNDED,
         border_style="dim white",
         header_style="bold magenta",
@@ -135,16 +146,16 @@ def criar_tabela_historico(historico: list[AtribuicaoRegistro]) -> Table:
     tb.add_column("#Código", justify="center", style="bold cyan", width=10)
     tb.add_column("Cliente", style="yellow", ratio=2)
     tb.add_column("Operador Atribuído", style="bold green", ratio=2)
-    tb.add_column("Justificativa Matemática", style="dim cyan", ratio=3)
+    tb.add_column("Resumo da Triagem & Justificativa", style="dim cyan", ratio=4)
     tb.add_column("Status", justify="center", width=11)
 
     if not historico:
         tb.add_row(
             "-",
             "-",
-            "[dim italic]Nenhum chamado pendente atribuído nesta sessão ainda.[/dim italic]",
+            "[dim italic]Nenhum chamado pendente triado nesta sessão ainda.[/dim italic]",
             "-",
-            "[dim italic]Aguardando novos chamados sem técnico...[/dim italic]",
+            "[dim italic]Aguardando novos chamados para triagem autônoma com IA...[/dim italic]",
             "[dim]-[/dim]",
         )
     else:
@@ -152,7 +163,7 @@ def criar_tabela_historico(historico: list[AtribuicaoRegistro]) -> Table:
             tb.add_row(
                 reg.horario,
                 f"#{reg.codigo}",
-                reg.cliente[:28] + ("..." if len(reg.cliente) > 28 else ""),
+                reg.cliente[:24] + ("..." if len(reg.cliente) > 24 else ""),
                 reg.operador_nome,
                 reg.score_justificativa,
                 reg.status,
@@ -173,21 +184,14 @@ def gerar_interface(
     ultimo_evento: str | None = None,
 ) -> Group:
     """Monta a interface completa em tempo real para o rich.live.Live."""
-    # 1. Cabeçalho Principal
     modo_cor = "bold yellow" if modo_simulacao else "bold green"
     modo_txt = "MODO SIMULAÇÃO (Sem alterações reais no Milvus)" if modo_simulacao else "PRODUÇÃO AO VIVO (Alterações Ativas)"
     hora_str = datetime.now().strftime("%H:%M:%S")
 
-    pesos_str = (
-        f"Atendendo={settings.peso_status_atendendo}x | "
-        f"A Fazer={settings.peso_status_a_fazer}x | "
-        f"Pausado={settings.peso_status_pausado}x"
-    )
-
     header_text = Text()
-    header_text.append("A.N.A.K.I.N - Despachante Automático de Chamados (Upgrade TI)\n", style="bold cyan")
-    header_text.append("Algoritmo: ", style="dim")
-    header_text.append(f"Fila Ponderada por Carga (Score de Ocupação: {pesos_str}) | Rate Limit 62s\n", style="white")
+    header_text.append("A.N.A.K.I.N - Triagem Autônoma com IA e Roteamento por Nível (Upgrade TI)\n", style="bold cyan")
+    header_text.append("Roteamento: ", style="dim")
+    header_text.append("Crítico/Alto -> Sênior (N2) | Médio/Baixo -> Pleno (N1) | Score Ponderado | Rate Limit 62s\n", style="white")
     header_text.append(f"Horário: {hora_str} | Status: ", style="dim")
     header_text.append(f"[{modo_txt}]", style=modo_cor)
 
@@ -198,7 +202,6 @@ def gerar_interface(
         padding=(0, 2),
     )
 
-    # 2. Barra de Progresso / Cronômetro Visual
     largura_barra = 28
     progresso = max(0.0, min(1.0, 1.0 - (segundos_restantes / max(1, intervalo_total))))
     preenchido = int(progresso * largura_barra)
@@ -221,18 +224,14 @@ def gerar_interface(
         padding=(0, 1),
     )
 
-    # 3. Tabela do Pool Ativo
     tabela_pool = criar_tabela_pool(scores, proximo_operador, settings)
-
-    # 4. Tabela de Histórico
     tabela_historico = criar_tabela_historico(historico)
 
-    # 5. Painel de Notificação em Destaque (se houver evento recente)
     elementos = [panel_header, panel_cronometro, tabela_pool, tabela_historico]
     if ultimo_evento:
         panel_alerta = Panel(
             Text(ultimo_evento, style="bold white"),
-            title="[bold yellow]🔔 Notificação de Despacho Ponderado[/bold yellow]",
+            title="[bold yellow]🔔 Evento de Triagem e Despacho[/bold yellow]",
             border_style="yellow",
             padding=(0, 1),
         )
@@ -245,12 +244,16 @@ async def ciclo_despachante(
     simulacao: bool = False,
     intervalo_segundos: int = 62,
 ) -> None:
-    """Executa o loop contínuo de monitoramento e despacho automático ponderado."""
+    """Executa o loop contínuo de monitoramento, triagem com IA e despacho por prioridade."""
     settings = get_settings()
     cache = LocalCache(settings=settings)
     dispatcher = AutoDispatcher(settings=settings, cache=cache)
+    triage_ai = TicketTriageAI(settings=settings, cache=cache)
     readonly_client = MilvusReadOnlyClient(settings=settings)
     creator_client = MilvusTicketCreatorClient(settings=settings)
+
+    # Carrega catálogo homologado do DuckDB
+    catalogo = cache.obter_catalogo_categorias_e_tipos()
 
     status_atual = "Inicializando sincronização do banco local..."
     ultimo_evento: str | None = None
@@ -270,7 +273,7 @@ async def ciclo_despachante(
     )
 
     with Live(render_group, console=console, refresh_per_second=4, screen=False) as live:
-        # Sincronização inicial rápida dos chamados abertos (status=9) para calibrar cargas reais
+        # Calibração inicial rápida dos chamados abertos (status=9)
         try:
             status_atual = "Calibrando chamados em aberto no Milvus (status=9)..."
             live.update(
@@ -338,7 +341,6 @@ async def ciclo_despachante(
                     cache.salvar_chamados(tickets_a_fazer)
                     novos_pendentes = dispatcher.identificar_chamados_pendentes(tickets_a_fazer)
 
-                # Se não houver chamados com status=1 sem técnico, checa se há chamados sem técnico no lote geral aberto
                 if not novos_pendentes:
                     status_atual = "Verificando se há chamados gerais sem técnico atribuído..."
                     live.update(
@@ -363,21 +365,46 @@ async def ciclo_despachante(
                 ultimo_evento = f"[yellow]Alerta na consulta Milvus: {e}[/yellow]"
                 novos_pendentes = []
 
-            # 3. Processa cada chamado pendente encontrado
+            # 3. Processa cada chamado pendente encontrado com Triagem IA e Roteamento por Nível
             if novos_pendentes:
                 for chamado in novos_pendentes:
                     cod = str(chamado.codigo or chamado.id or "Sem código")
-                    cli = str(chamado.cliente or "Sem cliente")
 
-                    # Seleciona operador de menor Score Ponderado com desempate
-                    op_escolhido, sc_escolhido, _ = dispatcher.selecionar_operador_menor_score()
-
-                    status_atual = f"Atribuindo Chamado #{cod} ao operador {op_escolhido.nome}..."
-                    ultimo_evento = (
-                        f"✔ Chamado #{cod} atribuído a [bold green]{op_escolhido.nome}[/bold green] "
-                        f"(Menor Score: {sc_escolhido.score_total} pts | Detalhe: {sc_escolhido.detalhe_formatado})"
+                    status_atual = f"Executando Triagem com IA para o Chamado #{cod}..."
+                    live.update(
+                        gerar_interface(
+                            scores=dispatcher.calcular_scores_pool(),
+                            proximo_operador=proximo_op,
+                            historico=dispatcher.historico_atribuicoes,
+                            segundos_restantes=0,
+                            intervalo_total=intervalo_segundos,
+                            status_atual=status_atual,
+                            modo_simulacao=simulacao,
+                            settings=settings,
+                            ultimo_evento=ultimo_evento,
+                        )
                     )
 
+                    # Triagem técnica inteligente com IA
+                    triagem = triage_ai.triar_chamado(chamado, catalogo=catalogo)
+
+                    # Roteamento por Nível de Prioridade (Tiered Dispatching)
+                    op_escolhido, sc_escolhido, _, tag_pool = dispatcher.selecionar_operador_por_prioridade(
+                        triagem.prioridade
+                    )
+
+                    prio_id = getattr(triagem, "prioridade_id", None) or "2"
+                    subcat_txt = f" / {triagem.categoria_secundaria}" if triagem.categoria_secundaria else ""
+
+                    # Formato explícito da Tríade e ID da Prioridade
+                    log_triagem = (
+                        f"✔ Triagem #{cod}: Prioridade: [{triagem.prioridade} (ID: {prio_id})] | "
+                        f"Mesa: [{op_escolhido.nome}] | Setor: [{op_escolhido.nome}] | "
+                        f"Operador: [{op_escolhido.nome} ({op_escolhido.email})]"
+                    )
+                    ultimo_evento = log_triagem
+
+                    status_atual = f"Atribuindo Chamado #{cod} ({op_escolhido.nome} - {tag_pool})..."
                     live.update(
                         gerar_interface(
                             scores=dispatcher.calcular_scores_pool(),
@@ -392,21 +419,21 @@ async def ciclo_despachante(
                         )
                     )
 
-                    # Executa a atribuição real ou simulada
-                    sucesso = await dispatcher.despachar_chamado(
+                    # Executa a atribuição completa no Milvus e no DuckDB
+                    sucesso = await dispatcher.despachar_chamado_triado(
                         chamado=chamado,
                         operador=op_escolhido,
+                        triagem=triagem,
                         score_info=sc_escolhido,
+                        tag_pool=tag_pool,
                         creator_client=creator_client,
                         simulacao=simulacao,
                     )
 
+                    tag_modo = "[SIMULAÇÃO]" if simulacao else "[PRODUÇÃO]"
                     if sucesso:
-                        tag_modo = "[SIMULAÇÃO]" if simulacao else "[PRODUÇÃO]"
-                        ultimo_evento = (
-                            f"✔ {tag_modo} Chamado #{cod} atribuído a [bold green]{op_escolhido.nome}[/bold green] "
-                            f"(Menor Score: {sc_escolhido.score_total} pts | Detalhe: {sc_escolhido.detalhe_formatado})"
-                        )
+                        ultimo_evento = f"{tag_modo} {log_triagem}"
+                        console.print(f"\n[bold green]{tag_modo} {log_triagem}[/bold green]")
                     else:
                         ultimo_evento = f"[bold red]✗ Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.[/bold red]"
 
@@ -422,14 +449,14 @@ async def ciclo_despachante(
 def main() -> None:
     """Ponto de entrada do script com tratamento de argumentos CLI."""
     parser = argparse.ArgumentParser(
-        description="A.N.A.K.I.N - Despachante Automático de Chamados (Upgrade TI)",
+        description="A.N.A.K.I.N - Despachante Automático e Triagem com IA (Upgrade TI)",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
         "-s",
         "--simulacao",
         action="store_true",
-        help="Executa em modo de simulação (avalia e exibe atribuições sem alterar nada no Milvus).",
+        help="Executa em modo de simulação (avalia, tria e exibe atribuições sem alterar dados no Milvus).",
     )
     parser.add_argument(
         "--intervalo",

@@ -21,6 +21,41 @@ from anakin.domain.ticket_creation_models import MilvusCreateTicketPayload
 console = Console()
 
 
+PRIORIDADE_ID_MAP: dict[str, str] = {
+    "baixo": "1",
+    "baixa": "1",
+    "médio": "2",
+    "medio": "2",
+    "média": "2",
+    "media": "2",
+    "alto": "3",
+    "alta": "3",
+    "crítico": "4",
+    "critico": "4",
+    "crítica": "4",
+    "critica": "4",
+}
+
+MAPA_EMAIL_PARA_NOME_OPERADOR: dict[str, str] = {
+    "carlos.bucazio@upgradeti.com.br": "Carlos Eduardo",
+    "gabriel@upgradeti.com.br": "Gabriel Oliveira",
+    "gabryel.santos@upgradeti.com.br": "Gabryel Santos",
+    "gabriel.sena@upgradeti.com.br": "Gabriel Sena",
+    "guilherme.melo@upgradeti.com.br": "Guilherme Maganha",
+    "kaio.silva@upgradeti.com.br": "Kaio Silva",
+}
+
+
+def resolver_prioridade_id(prioridade_val: str | int | None) -> str:
+    """Garante que a prioridade seja convertida para ID numérico string oficial ('1', '2', '3' ou '4')."""
+    if not prioridade_val:
+        return "2"
+    val_str = str(prioridade_val).strip().lower()
+    if val_str in ("1", "2", "3", "4"):
+        return val_str
+    return PRIORIDADE_ID_MAP.get(val_str, "2")
+
+
 def normalizar_para_busca(texto: str) -> str:
     """Normaliza texto para busca removendo acentos, pontuação, traços e espaços."""
     if not texto:
@@ -360,6 +395,103 @@ class MilvusTicketCreatorClient:
         except Exception as e:
             console.print(
                 f"[bold red][Erro Inesperado][/bold red] ao atribuir chamado #{chamado_codigo_ou_id}: {e}"
+            )
+            return False
+
+    async def atualizar_triagem_chamado(
+        self,
+        chamado_codigo_ou_id: str | int,
+        prioridade: str | int,
+        tipo_ticket: str,
+        categoria_primaria: str,
+        categoria_secundaria: Optional[str] = None,
+        nome_operador: Optional[str] = None,
+        email_tecnico: Optional[str] = None,
+        contato_nome: Optional[str] = None,
+        contato_email: Optional[str] = None,
+        contato_telefone: Optional[str] = None,
+    ) -> bool:
+        """Atualiza a triagem completa e atribuição de um chamado no Milvus via POST /chamado/atualizar.
+
+        Garante:
+        1. chamado_prioridade recebe obrigatoriamente ID string numérico ('1', '2', '3' ou '4').
+        2. Tríade de Atribuição no mesmo técnico com ordem estrita:
+           - chamado_mesa: Nome do técnico
+           - chamado_setor: Nome do técnico
+           - chamado_tecnico: E-mail oficial do operador
+        """
+        self._validar_rota("POST", "/chamado/atualizar")
+        await self._aguardar_rate_limit()
+
+        # 1. Mapeamento Numérico Obrigatório da Prioridade ('1', '2', '3' ou '4')
+        id_prioridade = resolver_prioridade_id(prioridade)
+
+        # 2. Resolução do nome do operador caso venha apenas o e-mail
+        nome_final = nome_operador
+        if not nome_final and email_tecnico:
+            nome_final = MAPA_EMAIL_PARA_NOME_OPERADOR.get(email_tecnico.strip().lower())
+
+        # 3. Montagem do payload preservando a ordem das chaves na serialização JSON:
+        # 1º chamado_ids
+        # 2º chamado_mesa (Mesa de Trabalho)
+        # 3º chamado_setor (Setor)
+        # 4º chamado_tecnico (E-mail do operador)
+        # 5º chamado_prioridade (ID '1', '2', '3' ou '4')
+        # 6º chamado_tipo_chamado
+        # 7º chamado_categoria_primaria
+        # 8º chamado_categoria_secundaria
+        corpo: dict[str, Any] = {
+            "chamado_ids": str(chamado_codigo_ou_id),
+        }
+
+        if nome_final:
+            corpo["chamado_mesa"] = str(nome_final).strip()
+            corpo["chamado_setor"] = str(nome_final).strip()
+
+        if email_tecnico:
+            corpo["chamado_tecnico"] = str(email_tecnico).strip()
+
+        corpo["chamado_prioridade"] = id_prioridade
+        corpo["chamado_tipo_chamado"] = str(tipo_ticket).strip()
+        corpo["chamado_categoria_primaria"] = str(categoria_primaria).strip()
+
+        if categoria_secundaria:
+            corpo["chamado_categoria_secundaria"] = str(categoria_secundaria).strip()
+
+        if contato_nome:
+            corpo["chamado_contato"] = str(contato_nome).strip()
+        if contato_email:
+            corpo["chamado_email"] = str(contato_email).strip()
+        if contato_telefone:
+            corpo["chamado_telefone"] = str(contato_telefone).strip()
+
+        client = await self._obter_client()
+
+        try:
+            resp = await client.post("/chamado/atualizar", json=corpo)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if isinstance(data, dict):
+                if data.get("status") is False:
+                    msg = data.get("mensagem") or data.get("retorno") or str(data)
+                    console.print(
+                        f"[bold red][Milvus Erro][/bold red] Falha ao atualizar triagem do chamado #{chamado_codigo_ou_id}: {msg}"
+                    )
+                    return False
+
+            console.print(
+                f"[bold green]✓ Triagem do chamado #{chamado_codigo_ou_id} atualizada com sucesso no Milvus.[/bold green]"
+            )
+            return True
+        except httpx.HTTPStatusError as he:
+            console.print(
+                f"[bold red][Erro HTTP {he.response.status_code}][/bold red] ao atualizar triagem do chamado #{chamado_codigo_ou_id}: {he.response.text}"
+            )
+            return False
+        except Exception as e:
+            console.print(
+                f"[bold red][Erro Inesperado][/bold red] ao atualizar triagem do chamado #{chamado_codigo_ou_id}: {e}"
             )
             return False
 
