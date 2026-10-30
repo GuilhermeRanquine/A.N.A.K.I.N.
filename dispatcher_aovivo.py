@@ -246,6 +246,20 @@ def gerar_interface(
     return Group(*elementos)
 
 
+def criar_quadro_contador(segundos_restantes: int) -> Panel:
+    """Gera um quadro simples e compacto apenas com o número dos segundos contando."""
+    texto = Text(justify="center")
+    texto.append("⏳ Próxima checagem no Milvus em: ", style="bold white")
+    texto.append(f"{segundos_restantes:02d}s", style="bold yellow")
+    return Panel(
+        texto,
+        box=box.ROUNDED,
+        border_style="cyan",
+        padding=(0, 2),
+        width=48,
+    )
+
+
 async def ciclo_despachante(
     simulacao: bool = False,
     intervalo_segundos: int = 62,
@@ -261,213 +275,135 @@ async def ciclo_despachante(
     # Carrega catálogo homologado do DuckDB
     catalogo = cache.obter_catalogo_categorias_e_tipos()
 
-    status_atual = "Inicializando sincronização do banco local..."
-    ultimo_evento: str | None = None
-    scores = dispatcher.calcular_scores_pool()
-    proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
+    modo_cor = "bold yellow" if simulacao else "bold green"
+    modo_txt = "MODO SIMULAÇÃO (Sem alterações reais no Milvus)" if simulacao else "PRODUÇÃO AO VIVO (Alterações Ativas)"
+    hora_str = datetime.now().strftime("%H:%M:%S")
 
-    render_group = gerar_interface(
-        scores=scores,
-        proximo_operador=proximo_op,
-        historico=dispatcher.historico_atribuicoes,
-        segundos_restantes=intervalo_segundos,
-        intervalo_total=intervalo_segundos,
-        status_atual=status_atual,
-        modo_simulacao=simulacao,
-        settings=settings,
-        ultimo_evento=ultimo_evento,
+    header_text = Text()
+    header_text.append("A.N.A.K.I.N - Despachante Automático de Chamados (Upgrade TI)\n", style="bold cyan")
+    header_text.append("Roteamento: ", style="dim")
+    header_text.append("Crítico/Alto -> Sênior (N2) | Médio/Baixo -> Pleno (N1) | Score Ponderado | Rate Limit 62s\n", style="white")
+    header_text.append(f"Horário: {hora_str} | Status: [{modo_txt}]", style="dim")
+
+    console.print(
+        Panel(
+            header_text,
+            box=box.DOUBLE,
+            border_style="cyan" if not simulacao else "yellow",
+            padding=(0, 2),
+        )
     )
 
-    with Live(render_group, console=console, refresh_per_second=4, screen=False) as live:
-        # Calibração inicial rápida dos chamados abertos (status=9)
-        try:
-            status_atual = "Calibrando chamados em aberto no Milvus (status=9)..."
-            live.update(
-                gerar_interface(
-                    scores=scores,
-                    proximo_operador=proximo_op,
-                    historico=dispatcher.historico_atribuicoes,
-                    segundos_restantes=0,
-                    intervalo_total=intervalo_segundos,
-                    status_atual=status_atual,
-                    modo_simulacao=simulacao,
-                    settings=settings,
-                    ultimo_evento=ultimo_evento,
-                )
-            )
-            tickets_iniciais = await readonly_client.listar_chamados(status=9, total_registros=100, pagina=1)
-            if tickets_iniciais:
-                cache.salvar_chamados(tickets_iniciais)
-                cache.sincronizar_status_abertos([t.codigo for t in tickets_iniciais if t.codigo])
-            scores = dispatcher.calcular_scores_pool()
-            proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
-        except Exception as e:
-            status_atual = f"Aviso de sincronização inicial ({e}). Prosseguindo com dados do DuckDB..."
+    # Calibração inicial rápida dos chamados abertos (status=9)
+    try:
+        console.print("[dim]Calibrando chamados em aberto no Milvus (status=9)...[/dim]")
+        tickets_iniciais = await readonly_client.listar_chamados(status=9, total_registros=100, pagina=1)
+        if tickets_iniciais:
+            cache.salvar_chamados(tickets_iniciais)
+            cache.sincronizar_status_abertos([t.codigo for t in tickets_iniciais if t.codigo])
+    except Exception as e:
+        console.print(f"[dim yellow]Aviso de sincronização inicial ({e}). Prosseguindo com dados do DuckDB...[/dim yellow]")
 
-        # Loop principal contínuo
-        while True:
-            # 1. Contagem regressiva segundo a segundo
-            status_atual = "Aguardando próxima janela oficial de verificação..."
+    scores = dispatcher.calcular_scores_pool()
+    proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
+    console.print(criar_tabela_pool(scores, proximo_op, settings))
+
+    # Loop principal contínuo
+    while True:
+        # 1. Contagem regressiva em quadro compacto e isolado (sem pular linhas)
+        with Live(
+            criar_quadro_contador(intervalo_segundos),
+            console=console,
+            refresh_per_second=2,
+            transient=True,
+        ) as live_contador:
             for s in range(intervalo_segundos, 0, -1):
-                live.update(
-                    gerar_interface(
-                        scores=scores,
-                        proximo_operador=proximo_op,
-                        historico=dispatcher.historico_atribuicoes,
-                        segundos_restantes=s,
-                        intervalo_total=intervalo_segundos,
-                        status_atual=status_atual,
-                        modo_simulacao=simulacao,
-                        settings=settings,
-                        ultimo_evento=ultimo_evento,
-                    )
-                )
+                live_contador.update(criar_quadro_contador(s))
                 await asyncio.sleep(1)
 
-            # 2. Executa a checagem no Milvus (POST /chamado/listagem com status=1 "A fazer")
-            status_atual = "Consultando chamados 'A fazer' no Milvus (POST /chamado/listagem, status=1)..."
-            live.update(
-                gerar_interface(
-                    scores=scores,
-                    proximo_operador=proximo_op,
-                    historico=dispatcher.historico_atribuicoes,
-                    segundos_restantes=0,
-                    intervalo_total=intervalo_segundos,
-                    status_atual=status_atual,
-                    modo_simulacao=simulacao,
-                    settings=settings,
-                    ultimo_evento=ultimo_evento,
+        # 2. Executa a checagem no Milvus (POST /chamado/listagem com status=1 "A fazer")
+        console.print("[dim cyan]⚡ Consultando chamados 'A fazer' no Milvus (POST /chamado/listagem, status=1)...[/dim cyan]")
+        novos_pendentes: list[TicketSummary] = []
+        try:
+            tickets_a_fazer = await readonly_client.listar_chamados(status=1, total_registros=50, pagina=1)
+            if tickets_a_fazer:
+                cache.salvar_chamados(tickets_a_fazer)
+                novos_pendentes = dispatcher.identificar_chamados_pendentes(tickets_a_fazer)
+
+            if not novos_pendentes:
+                tickets_abertos = await readonly_client.listar_chamados(status=9, total_registros=50, pagina=1)
+                if tickets_abertos:
+                    cache.salvar_chamados(tickets_abertos)
+                    novos_pendentes = dispatcher.identificar_chamados_pendentes(tickets_abertos)
+        except Exception as e:
+            console.print(f"[yellow]Alerta na consulta Milvus: {e}[/yellow]")
+            novos_pendentes = []
+
+        # 3. Processa cada chamado pendente encontrado com Triagem IA e Roteamento por Nível
+        if novos_pendentes:
+            for chamado in novos_pendentes:
+                cod = str(chamado.codigo or chamado.id or "Sem código")
+                console.print(f"[bold cyan]🔍 Executando Triagem com IA para o Chamado #{cod}...[/bold cyan]")
+
+                # Triagem técnica inteligente com IA
+                triagem = triage_ai.triar_chamado(chamado, catalogo=catalogo)
+
+                # Roteamento por Nível de Prioridade (Tiered Dispatching)
+                op_escolhido, sc_escolhido, _, tag_pool = dispatcher.selecionar_operador_por_prioridade(
+                    triagem.prioridade
                 )
-            )
 
-            novos_pendentes: list[TicketSummary] = []
-            try:
-                tickets_a_fazer = await readonly_client.listar_chamados(status=1, total_registros=50, pagina=1)
-                if tickets_a_fazer:
-                    cache.salvar_chamados(tickets_a_fazer)
-                    novos_pendentes = dispatcher.identificar_chamados_pendentes(tickets_a_fazer)
+                log_triagem = (
+                    f"✔ Triagem #{cod}: Prioridade: [{triagem.prioridade}] | "
+                    f"Mesa: [{op_escolhido.nome}] | Setor: [{op_escolhido.nome}] | "
+                    f"Operador: [{op_escolhido.nome} ({op_escolhido.email})]"
+                )
 
-                if not novos_pendentes:
-                    status_atual = "Verificando se há chamados gerais sem técnico atribuído..."
-                    live.update(
-                        gerar_interface(
-                            scores=scores,
-                            proximo_operador=proximo_op,
-                            historico=dispatcher.historico_atribuicoes,
-                            segundos_restantes=0,
-                            intervalo_total=intervalo_segundos,
-                            status_atual=status_atual,
-                            modo_simulacao=simulacao,
-                            settings=settings,
-                            ultimo_evento=ultimo_evento,
+                console.print(f"[dim]Atribuindo Chamado #{cod} ({op_escolhido.nome} - {tag_pool})...[/dim]")
+
+                # Executa a atribuição completa no Milvus e no DuckDB
+                sucesso = await dispatcher.despachar_chamado_triado(
+                    chamado=chamado,
+                    operador=op_escolhido,
+                    triagem=triagem,
+                    score_info=sc_escolhido,
+                    tag_pool=tag_pool,
+                    creator_client=creator_client,
+                    simulacao=simulacao,
+                )
+
+                tag_modo = "[SIMULAÇÃO]" if simulacao else "[PRODUÇÃO]"
+                if sucesso:
+                    msg_sucesso = f"[bold green]{tag_modo} {log_triagem}[/bold green]"
+                    console.print(f"\n{msg_sucesso}")
+                    try:
+                        registrar_evento(
+                            origem="DISPATCHER",
+                            nivel="SUCCESS",
+                            mensagem=f"{tag_modo} Chamado #{cod} -> {op_escolhido.nome} ({tag_pool}): {getattr(triagem, 'justificativa_prioridade', '')}",
                         )
-                    )
-                    tickets_abertos = await readonly_client.listar_chamados(status=9, total_registros=50, pagina=1)
-                    if tickets_abertos:
-                        cache.salvar_chamados(tickets_abertos)
-                        novos_pendentes = dispatcher.identificar_chamados_pendentes(tickets_abertos)
-
-            except Exception as e:
-                ultimo_evento = f"[yellow]Alerta na consulta Milvus: {e}[/yellow]"
-                novos_pendentes = []
-
-            # 3. Processa cada chamado pendente encontrado com Triagem IA e Roteamento por Nível
-            if novos_pendentes:
-                for chamado in novos_pendentes:
-                    cod = str(chamado.codigo or chamado.id or "Sem código")
-
-                    status_atual = f"Executando Triagem com IA para o Chamado #{cod}..."
-                    live.update(
-                        gerar_interface(
-                            scores=dispatcher.calcular_scores_pool(),
-                            proximo_operador=proximo_op,
-                            historico=dispatcher.historico_atribuicoes,
-                            segundos_restantes=0,
-                            intervalo_total=intervalo_segundos,
-                            status_atual=status_atual,
-                            modo_simulacao=simulacao,
-                            settings=settings,
-                            ultimo_evento=ultimo_evento,
+                    except Exception:
+                        pass
+                else:
+                    msg_falha = f"[bold red]✗ Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.[/bold red]"
+                    console.print(f"\n{msg_falha}")
+                    try:
+                        registrar_evento(
+                            origem="DISPATCHER",
+                            nivel="ERROR",
+                            mensagem=f"{tag_modo} Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.",
                         )
-                    )
+                    except Exception:
+                        pass
 
-                    # Triagem técnica inteligente com IA
-                    triagem = triage_ai.triar_chamado(chamado, catalogo=catalogo)
-
-                    # Roteamento por Nível de Prioridade (Tiered Dispatching)
-                    op_escolhido, sc_escolhido, _, tag_pool = dispatcher.selecionar_operador_por_prioridade(
-                        triagem.prioridade
-                    )
-
-                    subcat_txt = f" / {triagem.categoria_secundaria}" if triagem.categoria_secundaria else ""
-
-                    # Formato explícito da Tríade e Prioridade textual
-                    log_triagem = (
-                        f"✔ Triagem #{cod}: Prioridade: [{triagem.prioridade}] | "
-                        f"Mesa: [{op_escolhido.nome}] | Setor: [{op_escolhido.nome}] | "
-                        f"Operador: [{op_escolhido.nome} ({op_escolhido.email})]"
-                    )
-                    ultimo_evento = log_triagem
-
-                    status_atual = f"Atribuindo Chamado #{cod} ({op_escolhido.nome} - {tag_pool})..."
-                    live.update(
-                        gerar_interface(
-                            scores=dispatcher.calcular_scores_pool(),
-                            proximo_operador=op_escolhido,
-                            historico=dispatcher.historico_atribuicoes,
-                            segundos_restantes=0,
-                            intervalo_total=intervalo_segundos,
-                            status_atual=status_atual,
-                            modo_simulacao=simulacao,
-                            settings=settings,
-                            ultimo_evento=ultimo_evento,
-                        )
-                    )
-
-                    # Executa a atribuição completa no Milvus e no DuckDB
-                    sucesso = await dispatcher.despachar_chamado_triado(
-                        chamado=chamado,
-                        operador=op_escolhido,
-                        triagem=triagem,
-                        score_info=sc_escolhido,
-                        tag_pool=tag_pool,
-                        creator_client=creator_client,
-                        simulacao=simulacao,
-                    )
-
-                    tag_modo = "[SIMULAÇÃO]" if simulacao else "[PRODUÇÃO]"
-                    if sucesso:
-                        msg_sucesso = f"[bold green]{tag_modo} {log_triagem}[/bold green]"
-                        ultimo_evento = msg_sucesso
-                        live.console.print(f"\n{msg_sucesso}")
-                        try:
-                            registrar_evento(
-                                origem="DISPATCHER",
-                                nivel="SUCCESS",
-                                mensagem=f"{tag_modo} Chamado #{cod} -> {op_escolhido.nome} ({tag_pool}): {triagem.justificativa_sucinta}",
-                            )
-                        except Exception:
-                            pass
-                    else:
-                        msg_falha = f"[bold red]✗ Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.[/bold red]"
-                        ultimo_evento = msg_falha
-                        live.console.print(f"\n{msg_falha}")
-                        try:
-                            registrar_evento(
-                                origem="DISPATCHER",
-                                nivel="ERROR",
-                                mensagem=f"{tag_modo} Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.",
-                            )
-                        except Exception:
-                            pass
-
-                    # Recalcula scores para o próximo chamado
-                    scores = dispatcher.calcular_scores_pool()
-                    proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
-            else:
-                ultimo_evento = None
-                scores = dispatcher.calcular_scores_pool()
-                proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
+            # Exibe a tabela atualizada do pool após atribuições
+            scores = dispatcher.calcular_scores_pool()
+            proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
+            console.print(criar_tabela_pool(scores, proximo_op, settings))
+        else:
+            console.print("[dim green]✓ Nenhum chamado pendente no momento. Fila balanceada.[/dim green]")
+            scores = dispatcher.calcular_scores_pool()
+            proximo_op, score_info, _ = dispatcher.selecionar_operador_menor_score()
 
 
 def main() -> None:
