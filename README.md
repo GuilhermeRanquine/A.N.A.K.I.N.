@@ -1,6 +1,6 @@
 # 🛸 A.N.A.K.I.N
 ### **A**utomated **N**eural **A**ssignment, **K**nowledge **I**ntegration & **N**avigation
-*Sistema Autônomo de Triagem Técnica por IA, Despacho Ponderado de Chamados e Telemetria em Tempo Real — Upgrade TI*
+*Sistema Autônomo de Triagem Técnica por IA, Despacho Ponderado de Chamados e Telemetria em Tempo Real*
 
 ---
 
@@ -9,16 +9,16 @@
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.1+-FFF000.svg)](https://duckdb.org/)
 [![Google Gemini](https://img.shields.io/badge/Google%20Gemini-Flash--Lite-4285F4.svg)](https://ai.google.dev/)
 [![Milvus Helpdesk API](https://img.shields.io/badge/Milvus-API%20Integrada-0052CC.svg)](https://milvus.com.br/)
-[![License: Proprietary](https://img.shields.io/badge/License-Upgrade%20TI-red.svg)](#)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](#)
 
 ---
 
 ## 📋 Sumário Executivo
 
-O **A.N.A.K.I.N** é uma plataforma corporativa desenvolvida para a **Upgrade TI** com o objetivo de revolucionar a operação do **Milvus Helpdesk**. O sistema combina:
+O **A.N.A.K.I.N** é uma plataforma corporativa desenvolvida para automatizar e otimizar a operação de suporte e Service Desk integrado ao **Milvus Helpdesk**. O sistema combina:
 
 1. **Triagem Autônoma com IA Multimodal**: Leitura, interpretação técnica e classificação de criticidade de tickets utilizando **Google Gemini** (com fallback automático para **NVIDIA NIM / Minimax**).
-2. **Algoritmo de Despacho Ponderado por Score de Carga**: Distribuição matemática equitativa de chamados entre os operadores elegíveis da empresa, eliminando sobrecargas e ociosidade.
+2. **Algoritmo de Despacho Ponderado por Score de Carga**: Distribuição matemática equitativa de chamados entre os operadores elegíveis, eliminando sobrecargas e ociosidade.
 3. **Roteamento em Camadas (Tiered Dispatching)**: Roteamento de incidentes graves (`Crítico` e `Alto`) para o pool Sênior / N2 e requisições/rotinas (`Médio` e `Baixo`) para o pool Pleno / N1, com balanceamento dinâmico.
 4. **Camada de Persistência Analítica em DuckDB**: Banco analítico local de altíssima velocidade (`data/anakin_readonly.duckdb`), permitindo métricas e consultas com zero consumo desnecessário da cota da API.
 5. **Dashboard Operacional Sci-Fi HUD (Web + Terminal Live)**: Interface futurista com telemetria via WebSockets/SSE e CLI dinâmico via Rich sem repetição de linhas.
@@ -46,7 +46,7 @@ O **A.N.A.K.I.N** é uma plataforma corporativa desenvolvida para a **Upgrade TI
 ┌─────────────────────────┐                           ┌────────────────────┐
 │   TicketTriageAI        │                           │  AutoDispatcher    │
 │  - Gemini / NVIDIA NIM  │                           │  - Fila Ponderada  │
-│  - Prioridade Canônica  │                           │  - Pool 6 Técnicos │
+│  - Prioridade Canônica  │                           │  - Pool Elegível   │
 │  - Catálogo Homologado  │                           │  - Roteamento N1/N2│
 └───────────┬─────────────┘                           └─────────┬──────────┘
             │                                                   │
@@ -74,20 +74,20 @@ O **A.N.A.K.I.N** é uma plataforma corporativa desenvolvida para a **Upgrade TI
 
 ## ⚙️ Regras de Negócio e Algoritmos
 
-### 1. Pool Restrito de Atendimento (Upgrade TI)
-A fila de distribuição automática é restrita a **6 técnicos oficiais**:
+### 1. Pool Elegível de Atendimento
+A fila de distribuição automática é dividida em tiers técnicos balanceados:
 
-| Operador | E-mail Oficial | Nível Técnico / Fila |
+| Perfil do Operador | Identificador Exemplo | Nível Técnico / Fila |
 | :--- | :--- | :---: |
-| **Gabriel Oliveira** | `gabriel@upgradeti.com.br` | **Sênior / N2** |
-| **Gabryel Santos** | `gabryel.santos@upgradeti.com.br` | **Sênior / N2** |
-| **Guilherme Maganha** | `guilherme.melo@upgradeti.com.br` | **Sênior / N2** |
-| **Carlos Eduardo** | `carlos.bucazio@upgradeti.com.br` | **Pleno / N1** |
-| **Gabriel Sena** | `gabriel.sena@upgradeti.com.br` | **Pleno / N1** |
-| **Kaio Silva** | `kaio.silva@upgradeti.com.br` | **Pleno / N1** |
+| **Operador Alpha** | `tecnico.senior1@empresa.com.br` | **Sênior / N2** |
+| **Operador Bravo** | `tecnico.senior2@empresa.com.br` | **Sênior / N2** |
+| **Operador Charlie** | `tecnico.senior3@empresa.com.br` | **Sênior / N2** |
+| **Operador Delta** | `tecnico.pleno1@empresa.com.br` | **Pleno / N1** |
+| **Operador Echo** | `tecnico.pleno2@empresa.com.br` | **Pleno / N1** |
+| **Operador Foxtrot** | `tecnico.pleno3@empresa.com.br` | **Pleno / N1** |
 
 > [!IMPORTANT]
-> **Bloqueio Rígido de Gestão**: Operadores de diretoria, gerência e coordenação (Paulo, Leandro, Rodrigo Mellino, Wander, Felipe, Willian, Aijalom e Guilherme Ranquine) estão **estritamente bloqueados** da fila automática por travas de segurança em código.
+> **Bloqueio de Gestão e Contas Administrativas**: Usuários com cargos de diretoria, coordenação e gerência são **estritamente bloqueados** da fila automática de recebimento de tickets por travas de segurança em código, preservando a governança operacional.
 
 ---
 
@@ -114,9 +114,9 @@ No endpoint `POST /api/chamado/atualizar`, o Milvus exige que a mesa e o setor a
 ```json
 {
   "chamado_ids": "39236063",
-  "chamado_mesa": "Gabriel Sena",
-  "chamado_setor": "Gabriel Sena",
-  "chamado_tecnico": "gabriel.sena@upgradeti.com.br",
+  "chamado_mesa": "Operador Delta",
+  "chamado_setor": "Operador Delta",
+  "chamado_tecnico": "tecnico.pleno1@empresa.com.br",
   "chamado_prioridade": "Médio",
   "chamado_categoria_primaria": "Computadores",
   "chamado_categoria_secundaria": "Lentidão",
@@ -244,7 +244,6 @@ python -m unittest tests/test_hud_server.py
 
 ---
 
-## 👥 Autoria e Créditos
+## 👥 Governança do Projeto
 
-Desenvolvido para **Upgrade TI — Gestão e Soluções em Tecnologia**.  
-Liderança de Projeto & Engenharia: **Guilherme Ranquine** (`guilherme.ranquine@upgradeti.com.br`).
+Projeto arquitetado e mantido sob padrões estritos de automação autônoma, segurança operacional e integridade de dados.
