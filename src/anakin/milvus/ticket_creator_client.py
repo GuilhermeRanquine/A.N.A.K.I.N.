@@ -14,6 +14,7 @@ import duckdb
 import httpx
 from aiolimiter import AsyncLimiter
 from rich.console import Console
+from rich.markup import escape
 
 from anakin.config.settings import Settings, get_settings
 from anakin.domain.ticket_creation_models import MilvusCreateTicketPayload
@@ -127,6 +128,49 @@ def normalizar_para_busca(texto: str) -> str:
     nfkd = unicodedata.normalize("NFKD", str(texto))
     sem_acento = "".join([c for c in nfkd if not unicodedata.combining(c)])
     return re.sub(r"[^a-z0-9]", "", sem_acento.lower())
+
+
+def resolver_target_id_chamado(
+    ticket_ref: str | int,
+    duckdb_path: str = "data/anakin_readonly.duckdb",
+) -> str:
+    """Busca no DuckDB local o id interno do ticket correspondente ao código ou id informado.
+
+    O endpoint POST /api/chamado/atualizar exige o parâmetro chamado_ids (id interno).
+    """
+    if not ticket_ref:
+        return ""
+    ref_str = str(ticket_ref).strip()
+    db_file = Path(duckdb_path)
+    if db_file.exists():
+        try:
+            with duckdb.connect(str(db_file), read_only=True) as conn:
+                row = conn.execute(
+                    "SELECT id FROM chamados WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?",
+                    (ref_str, ref_str),
+                ).fetchone()
+                if row and row[0]:
+                    return str(row[0]).strip()
+        except Exception as e:
+            console.print(f"[dim yellow]Aviso ao resolver ID do chamado no DuckDB: {e}[/dim yellow]")
+    return ref_str
+
+
+def obter_prioridade_numerica(prioridade_val: str | int | None) -> str:
+    """Retorna a representação numérica correspondente ('1', '2', '3', '4')."""
+    if not prioridade_val:
+        return "2"
+    val_str = str(prioridade_val).strip()
+    if val_str in ("1", "2", "3", "4"):
+        return val_str
+    val_norm = normalizar_para_busca(val_str)
+    if val_norm in ("4", "critico", "critica") or "crit" in val_norm:
+        return "4"
+    if val_norm in ("3", "alto", "alta") or "alt" in val_norm:
+        return "3"
+    if val_norm in ("1", "baixo", "baixa") or "baix" in val_norm or "plan" in val_norm:
+        return "1"
+    return "2"
 
 
 class CreationSafetyError(Exception):
@@ -426,39 +470,44 @@ class MilvusTicketCreatorClient:
         self._validar_rota("POST", "/chamado/atualizar")
         await self._aguardar_rate_limit()
 
+        target_id = resolver_target_id_chamado(chamado_codigo_ou_id)
+        if not target_id:
+            console.print(
+                f"[bold red][ERRO MILVUS]: Identificador de chamado vazio ou inválido ({chamado_codigo_ou_id})[/bold red]"
+            )
+            return False
+
+        nome_op = MAPA_EMAIL_PARA_NOME_OPERADOR.get(str(email_tecnico).strip().lower(), "")
+
         client = await self._obter_client()
         corpo = {
-            "chamado_ids": str(chamado_codigo_ou_id),
+            "chamado_ids": str(target_id),
+            "chamado_mesa": str(nome_op),
+            "chamado_setor": str(nome_op),
             "chamado_tecnico": str(email_tecnico).strip(),
         }
 
         try:
             resp = await client.post("/chamado/atualizar", json=corpo)
-            resp.raise_for_status()
-            data = resp.json()
+            if resp.status_code != 200:
+                console.print(f"[bold red][ERRO MILVUS {resp.status_code}]:[/bold red] {escape(resp.text)}")
+                return False
 
-            # Verificação de resposta lógica da API Milvus
-            if isinstance(data, dict):
-                if data.get("status") is False:
-                    msg = data.get("mensagem") or data.get("retorno") or str(data)
-                    console.print(
-                        f"[bold red][Milvus Erro][/bold red] Falha ao atribuir chamado #{chamado_codigo_ou_id} "
-                        f"ao operador {email_tecnico}: {msg}"
-                    )
-                    return False
+            data = resp.json()
+            if isinstance(data, dict) and data.get("status") is False:
+                msg = data.get("mensagem") or data.get("retorno") or str(data)
+                console.print(
+                    f"[bold red][ERRO MILVUS 200 (Lógico)]:[/bold red] Falha ao atribuir chamado #{target_id} ao operador {email_tecnico}: {escape(str(msg))}"
+                )
+                return False
 
             console.print(
-                f"[bold green]✓ Operador {email_tecnico} atribuído com sucesso ao chamado #{chamado_codigo_ou_id} no Milvus.[/bold green]"
+                f"[bold green]✓ Operador {email_tecnico} atribuído com sucesso ao chamado #{target_id} no Milvus.[/bold green]"
             )
             return True
-        except httpx.HTTPStatusError as he:
-            console.print(
-                f"[bold red][Erro HTTP {he.response.status_code}][/bold red] ao atribuir chamado #{chamado_codigo_ou_id}: {he.response.text}"
-            )
-            return False
         except Exception as e:
             console.print(
-                f"[bold red][Erro Inesperado][/bold red] ao atribuir chamado #{chamado_codigo_ou_id}: {e}"
+                f"[bold red][ERRO MILVUS Exceção]:[/bold red] Falha ao atribuir chamado #{target_id}: {e}"
             )
             return False
 
@@ -466,8 +515,8 @@ class MilvusTicketCreatorClient:
         self,
         chamado_codigo_ou_id: str | int,
         prioridade: str | int,
-        tipo_ticket: str,
-        categoria_primaria: str,
+        tipo_ticket: Optional[str] = None,
+        categoria_primaria: Optional[str] = None,
         categoria_secundaria: Optional[str] = None,
         nome_operador: Optional[str] = None,
         email_tecnico: Optional[str] = None,
@@ -478,93 +527,129 @@ class MilvusTicketCreatorClient:
         """Atualiza a triagem completa e atribuição de um chamado no Milvus via POST /chamado/atualizar.
 
         Garante:
-        1. Envio do texto real da prioridade (ex: 'Baixo', 'Médio', 'Alto', 'Crítico') correspondente ao Milvus.
-        2. Envio duplo de chaves: payload['chamado_prioridade'] e payload['prioridade'] com o valor textual exato.
-        3. Tríade de Atribuição no mesmo técnico com ordem estrita:
-           - chamado_mesa: Nome do técnico
-           - chamado_setor: Nome do técnico
-           - chamado_tecnico: E-mail oficial do operador
+        1. Resolução confiável do id interno no DuckDB (chamado_ids).
+        2. Payload estrito e padronizado (sem chaves duplicadas ou inválidas).
+        3. Diagnóstico transparente de erros da API ([ERRO MILVUS {status_code}]: {texto}).
+        4. Tratamento resiliente da prioridade com retry numérico instantâneo se formato textual for rejeitado.
         """
         self._validar_rota("POST", "/chamado/atualizar")
         await self._aguardar_rate_limit()
 
-        # 1. Normalização do Texto Real da Prioridade (casa com DuckDB / Milvus)
-        prioridade_texto = normalizar_prioridade_texto(prioridade)
+        # 1. Resolução Confiável do Identificador do Chamado (chamado_ids)
+        target_id = resolver_target_id_chamado(chamado_codigo_ou_id)
+        if not target_id:
+            console.print(
+                f"[bold red][ERRO MILVUS]: Identificador de chamado vazio ou inválido ({chamado_codigo_ou_id})[/bold red]"
+            )
+            return False
 
         # 2. Resolução do nome do operador caso venha apenas o e-mail
         nome_final = nome_operador
         if not nome_final and email_tecnico:
-            nome_final = MAPA_EMAIL_PARA_NOME_OPERADOR.get(email_tecnico.strip().lower())
+            nome_final = MAPA_EMAIL_PARA_NOME_OPERADOR.get(email_tecnico.strip().lower(), "")
+        if not nome_final:
+            nome_final = ""
 
-        # 3. Montagem do payload preservando a ordem das chaves na serialização JSON:
-        # 1º chamado_ids
-        # 2º chamado_mesa (Mesa de Trabalho)
-        # 3º chamado_setor (Setor)
-        # 4º chamado_tecnico (E-mail do operador)
-        # 5º chamado_prioridade (Texto da Prioridade)
-        # 6º prioridade (Envio Duplo para compatibilidade da API)
-        # 7º chamado_tipo_chamado
-        # 8º chamado_categoria_primaria
-        # 9º chamado_categoria_secundaria
-        corpo: dict[str, Any] = {
-            "chamado_ids": str(chamado_codigo_ou_id),
+        # 3. Tratamento Resiliente da Prioridade (Canônica e Numérica)
+        prioridade_texto = normalizar_prioridade_texto(prioridade)
+        prio_num = obter_prioridade_numerica(prioridade)
+
+        # 4. Payload Estrito e Padronizado (Sem Chaves Duplicadas ou Inválidas)
+        payload: dict[str, Any] = {
+            "chamado_ids": str(target_id),
+            "chamado_mesa": str(nome_final),
+            "chamado_setor": str(nome_final),
+            "chamado_tecnico": str(email_tecnico or "").strip(),
+            "chamado_prioridade": str(prioridade_texto),
         }
 
-        if nome_final:
-            corpo["chamado_mesa"] = str(nome_final).strip()
-            corpo["chamado_setor"] = str(nome_final).strip()
-
-        if email_tecnico:
-            corpo["chamado_tecnico"] = str(email_tecnico).strip()
-
-        corpo["chamado_prioridade"] = prioridade_texto
-        corpo["prioridade"] = prioridade_texto
-        corpo["chamado_tipo_chamado"] = str(tipo_ticket).strip()
-        corpo["chamado_categoria_primaria"] = str(categoria_primaria).strip()
-
+        if categoria_primaria:
+            payload["chamado_categoria_primaria"] = str(categoria_primaria).strip()
         if categoria_secundaria:
-            corpo["chamado_categoria_secundaria"] = str(categoria_secundaria).strip()
-
+            payload["chamado_categoria_secundaria"] = str(categoria_secundaria).strip()
+        if tipo_ticket:
+            payload["chamado_tipo_chamado"] = str(tipo_ticket).strip()
         if contato_nome:
-            corpo["chamado_contato"] = str(contato_nome).strip()
+            payload["chamado_contato"] = str(contato_nome).strip()
         if contato_email:
-            corpo["chamado_email"] = str(contato_email).strip()
+            payload["chamado_email"] = str(contato_email).strip()
         if contato_telefone:
-            corpo["chamado_telefone"] = str(contato_telefone).strip()
-
-        console.print(
-            f"[dim cyan]✔ Prioridade enviada ao Milvus: [Texto: '{prioridade_texto}'][/dim cyan]"
-        )
+            payload["chamado_telefone"] = str(contato_telefone).strip()
 
         client = await self._obter_client()
 
+        # 5. Tentativa Inicial (Prioridade Canônica Textual)
         try:
-            resp = await client.post("/chamado/atualizar", json=corpo)
-            resp.raise_for_status()
-            data = resp.json()
+            resp = await client.post("/chamado/atualizar", json=payload)
+        except Exception as e:
+            console.print(
+                f"[bold red][ERRO MILVUS Conexão]:[/bold red] Falha na requisição para o chamado #{target_id}: {e}"
+            )
+            return False
 
-            if isinstance(data, dict):
-                if data.get("status") is False:
+        houve_erro = False
+        erro_prioridade = False
+
+        if resp.status_code != 200:
+            houve_erro = True
+            console.print(f"[bold red][ERRO MILVUS {resp.status_code}]:[/bold red] {escape(resp.text)}")
+            texto_lower = resp.text.lower()
+            if any(k in texto_lower for k in ["prioridade", "priority", "chamado_prioridade"]):
+                erro_prioridade = True
+        else:
+            try:
+                data = resp.json()
+                if isinstance(data, dict) and data.get("status") is False:
+                    houve_erro = True
                     msg = data.get("mensagem") or data.get("retorno") or str(data)
+                    console.print(f"[bold red][ERRO MILVUS 200 (Lógico)]:[/bold red] {escape(str(msg))}")
+                    texto_lower = str(msg).lower()
+                    if any(k in texto_lower for k in ["prioridade", "priority", "chamado_prioridade"]):
+                        erro_prioridade = True
+            except Exception:
+                pass
+
+        # 6. Retry Automático Instantâneo com Representação Numérica ('1', '2', '3', '4')
+        if houve_erro and erro_prioridade and prio_num != prioridade_texto:
+            console.print(
+                f"[bold yellow][Retry Prioridade Numérica][/bold yellow] Milvus rejeitou prioridade textual "
+                f"'{prioridade_texto}'. Executando retry automático instantâneo com ID numérico '{prio_num}'..."
+            )
+            payload["chamado_prioridade"] = str(prio_num)
+            try:
+                resp_retry = await client.post("/chamado/atualizar", json=payload)
+                if resp_retry.status_code != 200:
                     console.print(
-                        f"[bold red][Milvus Erro][/bold red] Falha ao atualizar triagem do chamado #{chamado_codigo_ou_id}: {msg}"
+                        f"[bold red][ERRO MILVUS {resp_retry.status_code}]:[/bold red] {escape(resp_retry.text)}"
                     )
                     return False
 
-            console.print(
-                f"[bold green]✓ Triagem do chamado #{chamado_codigo_ou_id} atualizada com sucesso no Milvus.[/bold green]"
-            )
-            return True
-        except httpx.HTTPStatusError as he:
-            console.print(
-                f"[bold red][Erro HTTP {he.response.status_code}][/bold red] ao atualizar triagem do chamado #{chamado_codigo_ou_id}: {he.response.text}"
-            )
+                try:
+                    data_retry = resp_retry.json()
+                    if isinstance(data_retry, dict) and data_retry.get("status") is False:
+                        msg_retry = data_retry.get("mensagem") or data_retry.get("retorno") or str(data_retry)
+                        console.print(f"[bold red][ERRO MILVUS 200 (Lógico)]:[/bold red] {escape(str(msg_retry))}")
+                        return False
+                except Exception:
+                    pass
+
+                console.print(
+                    f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus (via retry numérico '{prio_num}').[/bold green]"
+                )
+                return True
+            except Exception as e:
+                console.print(
+                    f"[bold red][ERRO MILVUS Conexão (Retry)]:[/bold red] Falha no retry para o chamado #{target_id}: {e}"
+                )
+                return False
+
+        if houve_erro:
             return False
-        except Exception as e:
-            console.print(
-                f"[bold red][Erro Inesperado][/bold red] ao atualizar triagem do chamado #{chamado_codigo_ou_id}: {e}"
-            )
-            return False
+
+        console.print(
+            f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus.[/bold green]"
+        )
+        return True
 
     async def close(self) -> None:
         """Encerra a conexão HTTP."""

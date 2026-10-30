@@ -46,6 +46,7 @@ from anakin.milvus.readonly_client import MilvusReadOnlyClient
 from anakin.milvus.ticket_creator_client import CreationSafetyError, MilvusTicketCreatorClient
 from anakin.storage.local_cache import LocalCache, normalizar_para_busca
 from anakin.vision.gemini_extractor import GeminiTicketExtractor
+from anakin.web.telemetry import registrar_evento
 
 console = Console()
 
@@ -1181,6 +1182,10 @@ async def main() -> None:
     # Catálogo Oficial de Operadores Ativos da Upgrade TI
     operadores_iniciais = cache.listar_operadores_oficiais()
     console.print(f"[dim green]✓ {len(operadores_iniciais)} operadores ativos no catálogo oficial da Upgrade TI.[/dim green]")
+    try:
+        registrar_evento("ATENDENTE", "INFO", f"Agente Atendente conectado com {len(operadores_iniciais)} operadores ativos.")
+    except Exception:
+        pass
 
     async with MilvusTicketCreatorClient(settings=settings) as creator, MilvusReadOnlyClient(settings=settings) as ro_client:
         # Modo Linha de Comando (CLI)

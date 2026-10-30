@@ -1,7 +1,14 @@
 """Testes unitários e de integração do módulo AutoDispatcher, triagem por IA e roteamento por nível."""
 
 from datetime import datetime, timedelta
+from pathlib import Path
+import sys
 import unittest
+
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
 from anakin.config.settings import Settings
 from anakin.dispatch.auto_dispatcher import (
     AutoDispatcher,
@@ -186,9 +193,8 @@ class TestAutoDispatcher(unittest.TestCase):
         self.assertEqual(resolver_prioridade_id("Crítico"), "4")
 
     def test_triade_atribuicao_e_ordem_payload(self) -> None:
-        """Valida se Mesa, Setor e Operador são definidos no mesmo técnico, texto de prioridade e envio duplo."""
+        """Valida se Mesa, Setor e Operador são definidos no mesmo técnico, payload estrito e sem chaves extras."""
         creator = MilvusTicketCreatorClient()
-        # Mock de httpx client para capturar o payload gerado
         payload_capturado = {}
 
         class DummyClient:
@@ -197,6 +203,7 @@ class TestAutoDispatcher(unittest.TestCase):
                 payload_capturado = json
                 class DummyResp:
                     status_code = 200
+                    text = '{"status": true}'
                     def raise_for_status(self): pass
                     def json(self): return {"status": True}
                 return DummyResp()
@@ -211,7 +218,7 @@ class TestAutoDispatcher(unittest.TestCase):
         creator._aguardar_rate_limit = dummy_wait  # type: ignore
 
         import asyncio
-        asyncio.run(
+        sucesso = asyncio.run(
             creator.atualizar_triagem_chamado(
                 chamado_codigo_ou_id="77777",
                 prioridade="Médio",
@@ -222,15 +229,17 @@ class TestAutoDispatcher(unittest.TestCase):
                 email_tecnico="gabriel.sena@upgradeti.com.br",
             )
         )
+        self.assertTrue(sucesso)
 
         # 1. Validação da tríade com o mesmo técnico
         self.assertEqual(payload_capturado["chamado_mesa"], "Gabriel Sena")
         self.assertEqual(payload_capturado["chamado_setor"], "Gabriel Sena")
         self.assertEqual(payload_capturado["chamado_tecnico"], "gabriel.sena@upgradeti.com.br")
 
-        # 2. Prioridade textual real e envio duplo de chaves
+        # 2. Prioridade canônica textual e ausência de chaves extras
         self.assertEqual(payload_capturado["chamado_prioridade"], "Médio")
-        self.assertEqual(payload_capturado["prioridade"], "Médio")
+        self.assertNotIn("prioridade", payload_capturado, "A chave avulsa 'prioridade' não deve ser enviada")
+        self.assertNotIn("acao", payload_capturado, "A chave 'acao' não deve ser enviada")
 
         # 3. Ordem das chaves na serialização
         chaves = list(payload_capturado.keys())
@@ -242,6 +251,75 @@ class TestAutoDispatcher(unittest.TestCase):
         self.assertLess(idx_mesa, idx_tecnico, "chamado_mesa deve vir ANTES de chamado_tecnico")
         self.assertLess(idx_setor, idx_tecnico, "chamado_setor deve vir ANTES de chamado_tecnico")
         self.assertLess(idx_tecnico, idx_prioridade, "chamado_tecnico deve vir ANTES de chamado_prioridade")
+
+    def test_resolucao_confiavel_id_interno_duckdb(self) -> None:
+        """Valida que o id interno é resolvido corretamente via DuckDB pelo código amigável."""
+        from anakin.milvus.ticket_creator_client import resolver_target_id_chamado
+
+        # Ticket 69785 possui id interno 39236063 no banco local
+        id_resolvido = resolver_target_id_chamado("69785")
+        self.assertEqual(id_resolvido, "39236063")
+
+        # Se já passar o ID interno, mantém
+        id_direto = resolver_target_id_chamado("39236063")
+        self.assertEqual(id_direto, "39236063")
+
+        # Se o ticket não existir no cache local, preserva a referência informada
+        id_fallback = resolver_target_id_chamado("ticket_inexistente_999")
+        self.assertEqual(id_fallback, "ticket_inexistente_999")
+
+    def test_retry_automatico_prioridade_numerica(self) -> None:
+        """Valida que, se a API rejeitar a prioridade textual, ocorre retry automático com ID numérico."""
+        creator = MilvusTicketCreatorClient()
+        tentativas: list[dict] = []
+
+        class DummyClientRetry:
+            async def post(self, url, json=None, **kwargs):
+                tentativas.append(dict(json))
+                class DummyResp:
+                    def __init__(self, sc, txt, data):
+                        self.status_code = sc
+                        self.text = txt
+                        self._data = data
+                    def json(self): return self._data
+                    def raise_for_status(self): pass
+
+                if len(tentativas) == 1:
+                    # 1ª tentativa com texto rejeitada por prioridade inválida
+                    return DummyResp(400, '{"error": "Formato de prioridade inválido"}', {"error": "Formato de prioridade inválido"})
+                else:
+                    # 2ª tentativa com número aceita com sucesso
+                    return DummyResp(200, '{"status": true}', {"status": True})
+
+        async def dummy_client():
+            return DummyClientRetry()
+
+        async def dummy_wait():
+            pass
+
+        creator._obter_client = dummy_client  # type: ignore
+        creator._aguardar_rate_limit = dummy_wait  # type: ignore
+
+        import asyncio
+        sucesso = asyncio.run(
+            creator.atualizar_triagem_chamado(
+                chamado_codigo_ou_id="69785",
+                prioridade="Médio",
+                tipo_ticket="Incidente",
+                categoria_primaria="Computadores",
+                nome_operador="Gabriel Sena",
+                email_tecnico="gabriel.sena@upgradeti.com.br",
+            )
+        )
+
+        self.assertTrue(sucesso)
+        self.assertEqual(len(tentativas), 2)
+        # 1ª tentativa enviou texto "Médio"
+        self.assertEqual(tentativas[0]["chamado_prioridade"], "Médio")
+        self.assertEqual(tentativas[0]["chamado_ids"], "39236063")
+        # 2ª tentativa enviou número "2"
+        self.assertEqual(tentativas[1]["chamado_prioridade"], "2")
+        self.assertEqual(tentativas[1]["chamado_ids"], "39236063")
 
     def test_validacao_rota_atualizar_ticket_creator(self) -> None:
         """Testa se POST /chamado/atualizar está liberado no MilvusTicketCreatorClient."""

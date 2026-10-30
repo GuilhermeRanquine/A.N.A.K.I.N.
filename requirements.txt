@@ -15,3 +15,5 @@ duckdb>=1.1.0
 matplotlib>=3.9.2
 seaborn>=0.13.2
 rich>=13.8.0
+fastapi>=0.115.0
+uvicorn>=0.30.0

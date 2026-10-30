@@ -27,6 +27,7 @@ data/*.duckdb*
 data/*.parquet
 data/*.csv
 data/*.png
+data/*.jsonl
 data/prints/
 
 # Prompts e saídas do Agente

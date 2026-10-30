@@ -60,6 +60,7 @@ from anakin.domain.ticket_models import TicketSummary
 from anakin.milvus.readonly_client import MilvusReadOnlyClient
 from anakin.milvus.ticket_creator_client import MilvusTicketCreatorClient
 from anakin.storage.local_cache import LocalCache
+from anakin.web.telemetry import registrar_evento
 
 console = Console()
 
@@ -229,8 +230,13 @@ def gerar_interface(
 
     elementos = [panel_header, panel_cronometro, tabela_pool, tabela_historico]
     if ultimo_evento:
+        try:
+            conteudo_alerta = Text.from_markup(ultimo_evento)
+        except Exception:
+            conteudo_alerta = Text(ultimo_evento, style="bold white")
+
         panel_alerta = Panel(
-            Text(ultimo_evento, style="bold white"),
+            conteudo_alerta,
             title="[bold yellow]🔔 Evento de Triagem e Despacho[/bold yellow]",
             border_style="yellow",
             padding=(0, 1),
@@ -431,10 +437,29 @@ async def ciclo_despachante(
 
                     tag_modo = "[SIMULAÇÃO]" if simulacao else "[PRODUÇÃO]"
                     if sucesso:
-                        ultimo_evento = f"{tag_modo} {log_triagem}"
-                        console.print(f"\n[bold green]{tag_modo} {log_triagem}[/bold green]")
+                        msg_sucesso = f"[bold green]{tag_modo} {log_triagem}[/bold green]"
+                        ultimo_evento = msg_sucesso
+                        live.console.print(f"\n{msg_sucesso}")
+                        try:
+                            registrar_evento(
+                                origem="DISPATCHER",
+                                nivel="SUCCESS",
+                                mensagem=f"{tag_modo} Chamado #{cod} -> {op_escolhido.nome} ({tag_pool}): {triagem.justificativa_sucinta}",
+                            )
+                        except Exception:
+                            pass
                     else:
-                        ultimo_evento = f"[bold red]✗ Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.[/bold red]"
+                        msg_falha = f"[bold red]✗ Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.[/bold red]"
+                        ultimo_evento = msg_falha
+                        live.console.print(f"\n{msg_falha}")
+                        try:
+                            registrar_evento(
+                                origem="DISPATCHER",
+                                nivel="ERROR",
+                                mensagem=f"{tag_modo} Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.",
+                            )
+                        except Exception:
+                            pass
 
                     # Recalcula scores para o próximo chamado
                     scores = dispatcher.calcular_scores_pool()
