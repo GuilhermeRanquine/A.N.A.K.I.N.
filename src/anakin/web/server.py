@@ -1,7 +1,7 @@
 """Servidor Web Assíncrono do Dashboard HUD Sci-Fi do A.N.A.K.I.N (FastAPI + SSE).
 
-Disponibiliza rotas estáticas para os assets do framework, endpoints JSON de telemetria
-e streaming em tempo real via Server-Sent Events (SSE).
+Disponibiliza rotas estáticas para os assets do framework, endpoints JSON de telemetria,
+controle operacional do despachante e streaming em tempo real via Server-Sent Events (SSE).
 """
 
 from contextlib import asynccontextmanager
@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator, Optional
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 # Garante a resolução do pacote anakin
@@ -25,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from anakin.config.settings import Settings, get_settings
+from anakin.dispatch.dispatcher_worker import DispatcherWorker
 from anakin.web.data_service import AnakinDataService
 from anakin.web.telemetry import registrar_evento, telemetry
 
@@ -33,18 +35,69 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Ciclo de vida da aplicação FastAPI: emite telemetria de boot e inicialização."""
+    """Ciclo de vida gerenciado do FastAPI: instancia e controla o worker de despacho e telemetria."""
+    settings = get_settings()
+
+    # Resgata parâmetros de execução a partir de app.state ou variáveis de ambiente
+    simulacao = getattr(app.state, "simulacao", None)
+    if simulacao is None:
+        simulacao = os.getenv("ANAKIN_SIMULACAO", "false").lower() in ("true", "1", "yes")
+    app.state.simulacao = simulacao
+
+    intervalo = getattr(app.state, "intervalo", None)
+    if intervalo is None:
+        intervalo = int(os.getenv("ANAKIN_INTERVALO", "62"))
+    app.state.intervalo = intervalo
+
+    sem_despachante = getattr(app.state, "sem_despachante", None)
+    if sem_despachante is None:
+        sem_despachante = os.getenv("ANAKIN_SEM_DESPACHANTE", "false").lower() in ("true", "1", "yes")
+    app.state.sem_despachante = sem_despachante
+
+    worker = DispatcherWorker(
+        settings=settings,
+        simulacao=app.state.simulacao,
+        intervalo_segundos=app.state.intervalo,
+    )
+    app.state.dispatcher_worker = worker
+
+    if not app.state.sem_despachante:
+        worker_task = asyncio.create_task(worker.start(), name="anakin_dispatcher_worker")
+        worker._task = worker_task
+        registrar_evento(
+            origem="SYSTEM",
+            nivel="SUCCESS",
+            mensagem=f"Motor de Despacho Automático iniciado em background (simulação={simulacao}, intervalo={intervalo}s).",
+        )
+    else:
+        registrar_evento(
+            origem="SYSTEM",
+            nivel="INFO",
+            mensagem="Servidor HUD iniciado em modo isolado (--sem-despachante).",
+        )
+
     registrar_evento(
         origem="WEB_SERVER",
         nivel="SUCCESS",
         mensagem="Servidor HUD Sci-Fi operacional. Endpoints REST e streaming SSE ativos.",
     )
-    yield
-    registrar_evento(
-        origem="WEB_SERVER",
-        nivel="INFO",
-        mensagem="Servidor HUD Sci-Fi desligado com segurança.",
-    )
+
+    try:
+        yield
+    finally:
+        # Encerramento gracioso (Graceful Shutdown)
+        if hasattr(app.state, "dispatcher_worker") and app.state.dispatcher_worker:
+            await app.state.dispatcher_worker.stop()
+            registrar_evento(
+                origem="SYSTEM",
+                nivel="INFO",
+                mensagem="Motor de Despacho finalizado com segurança.",
+            )
+        registrar_evento(
+            origem="WEB_SERVER",
+            nivel="INFO",
+            mensagem="Servidor HUD Sci-Fi desligado com segurança.",
+        )
 
 
 app = FastAPI(
@@ -141,7 +194,7 @@ async def get_logs(limite: int = Query(default=100, ge=1, le=500)) -> list[dict[
 
 @app.post("/api/logs")
 async def post_log(request: Request) -> dict[str, Any]:
-    """Permite que scripts externos (ex: dispatcher_aovivo) injetem eventos na telemetria."""
+    """Permite que scripts externos injetem eventos na telemetria."""
     corpo = await request.json()
     origem = corpo.get("origem", "EXTERNO")
     nivel = corpo.get("nivel", "INFO")
@@ -150,6 +203,38 @@ async def post_log(request: Request) -> dict[str, Any]:
 
     ev = registrar_evento(origem=origem, nivel=nivel, mensagem=mensagem, detalhes=detalhes)
     return {"status": "ok", "evento": ev.to_dict()}
+
+
+# -------------------------------------------------------------
+# Endpoints REST de Controle Operacional do Despachante
+# -------------------------------------------------------------
+@app.post("/api/dispatcher/pause")
+async def pause_dispatcher() -> dict[str, Any]:
+    """Pausa temporariamente a atribuição de chamados."""
+    worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
+    if not worker:
+        return {"status": "error", "mensagem": "Motor de despacho não configurado."}
+    worker.pause()
+    return {"status": "ok", "mensagem": "Motor de despacho pausado com sucesso.", "detalhes": worker.get_status()}
+
+
+@app.post("/api/dispatcher/resume")
+async def resume_dispatcher() -> dict[str, Any]:
+    """Retoma o fluxo contínuo de despacho automático."""
+    worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
+    if not worker:
+        return {"status": "error", "mensagem": "Motor de despacho não configurado."}
+    worker.resume()
+    return {"status": "ok", "mensagem": "Motor de despacho retomado com sucesso.", "detalhes": worker.get_status()}
+
+
+@app.get("/api/dispatcher/status")
+async def get_dispatcher_status() -> dict[str, Any]:
+    """Retorna o estado do worker (rodando, pausado, segundos restantes, último chamado triado)."""
+    worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
+    if not worker:
+        return {"status": "inativo", "rodando": False, "pausado": False}
+    return worker.get_status()
 
 
 # -------------------------------------------------------------
@@ -169,9 +254,17 @@ async def stream_events(request: Request) -> StreamingResponse:
             pool_inicial = data_service.obter_pool_atendimento()
             yield f"event: pool\ndata: {json.dumps(pool_inicial, ensure_ascii=False)}\n\n"
 
-            # Envia logs recentes
-            logs_iniciais = telemetry.obter_eventos(limite=20)
+            # Envia logs recentes (excluindo batimentos puros de contagem regressiva)
+            logs_iniciais = [
+                l for l in telemetry.obter_eventos(limite=30)
+                if not (isinstance(l.get("detalhes"), dict) and l["detalhes"].get("tipo") == "countdown")
+            ]
             yield f"event: logs_batch\ndata: {json.dumps(logs_iniciais, ensure_ascii=False)}\n\n"
+
+            # Transmite snapshot inicial do cronômetro tático se o worker estiver ativo
+            worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
+            if worker:
+                yield f"event: countdown\ndata: {json.dumps({'segundos': worker.segundos_restantes, 'total': worker.intervalo_segundos}, ensure_ascii=False)}\n\n"
 
             contador_heartbeat = 0
 
@@ -183,7 +276,11 @@ async def stream_events(request: Request) -> StreamingResponse:
                 try:
                     # Espera um novo evento com timeout curto para enviar heartbeats periódicos
                     ev = await asyncio.wait_for(queue.get(), timeout=2.0)
-                    yield f"event: log\ndata: {json.dumps(ev.to_dict(), ensure_ascii=False)}\n\n"
+                    detalhes = ev.detalhes or {}
+                    if detalhes.get("tipo") == "countdown":
+                        yield f"event: countdown\ndata: {json.dumps(detalhes, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"event: log\ndata: {json.dumps(ev.to_dict(), ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
                     pass
 
@@ -211,10 +308,25 @@ async def stream_events(request: Request) -> StreamingResponse:
     )
 
 
-def start_server(host: str = "127.0.0.1", port: int = 7100, reload: bool = False) -> None:
-    """Inicia o servidor Uvicorn."""
+def start_server(
+    host: str = "127.0.0.1",
+    port: int = 7100,
+    reload: bool = False,
+    simulacao: bool = False,
+    intervalo: int = 62,
+    sem_despachante: bool = False,
+) -> None:
+    """Inicia o servidor Uvicorn com suporte ao despachante em processo único."""
+    app.state.simulacao = simulacao
+    app.state.intervalo = intervalo
+    app.state.sem_despachante = sem_despachante
+
+    os.environ["ANAKIN_SIMULACAO"] = "1" if simulacao else "0"
+    os.environ["ANAKIN_INTERVALO"] = str(intervalo)
+    os.environ["ANAKIN_SEM_DESPACHANTE"] = "1" if sem_despachante else "0"
+
     uvicorn.run(
-        "anakin.web.server:app",
+        "anakin.web.server:app" if reload else app,
         host=host,
         port=port,
         reload=reload,
@@ -227,7 +339,16 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="Host de escuta (padrão: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=7100, help="Porta de escuta (padrão: 7100)")
     parser.add_argument("--reload", action="store_true", help="Recarregamento automático (dev)")
+    parser.add_argument("-s", "--simulacao", action="store_true", help="Modo simulação")
+    parser.add_argument("--intervalo", type=int, default=62, help="Intervalo em segundos (padrão: 62s)")
+    parser.add_argument("--sem-despachante", action="store_true", help="Inicia sem despachante")
     args = parser.parse_args()
 
-    start_server(host=args.host, port=args.port, reload=args.reload)
-
+    start_server(
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        simulacao=args.simulacao,
+        intervalo=args.intervalo,
+        sem_despachante=args.sem_despachante,
+    )

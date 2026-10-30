@@ -63,16 +63,27 @@ def normalizar_texto_mesa(texto: str) -> str:
 class LocalCache:
     """Gerenciador do banco de dados DuckDB local para chamados."""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, read_only: bool = False) -> None:
         self.settings = settings or get_settings()
         self.db_path = Path(self.settings.duckdb_path)
+        self.read_only = read_only
         # Garante a existência do diretório pai (ex: data/)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._inicializar_tabelas()
+        if not self.read_only:
+            self._inicializar_tabelas()
 
-    def _obter_conexao(self) -> duckdb.DuckDBPyConnection:
-        """Abre uma conexão com o DuckDB."""
-        return duckdb.connect(str(self.db_path))
+    def _obter_conexao(self, read_only: Optional[bool] = None) -> duckdb.DuckDBPyConnection:
+        """Abre uma conexão com o DuckDB com retry resiliente em caso de concorrência."""
+        import time
+        ro = self.read_only if read_only is None else read_only
+        for tentativa in range(5):
+            try:
+                return duckdb.connect(str(self.db_path), read_only=ro)
+            except duckdb.ConnectionException as e:
+                if tentativa < 4 and "different configuration" in str(e):
+                    time.sleep(0.03)
+                    continue
+                raise
 
     def _inicializar_tabelas(self) -> None:
         """Cria as tabelas analíticas caso não existam e adiciona colunas necessárias."""

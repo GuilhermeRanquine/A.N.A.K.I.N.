@@ -528,11 +528,58 @@ function initSSE() {
       }
     });
 
+    state.sseSource.addEventListener("countdown", (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        atualizarCronometroHUD(payload.segundos, payload.total);
+      } catch (e) {
+        console.warn("Erro ao processar countdown SSE:", e);
+      }
+    });
+
     state.sseSource.onerror = () => {
       console.warn("Conexão SSE oscilou. Reconectando em 5 segundos...");
     };
   } catch (err) {
     console.error("Falha ao inicializar EventSource SSE:", err);
+  }
+}
+
+function atualizarCronometroHUD(segundos, total) {
+  const radarSweep = document.getElementById("radar-sweep");
+  const tickerCountdown = document.getElementById("ticker-countdown");
+  const termBadge = document.getElementById("terminal-countdown-badge");
+
+  const s = Number(segundos);
+  const tot = Number(total) || 62;
+
+  if (s > 0) {
+    if (radarSweep) {
+      radarSweep.classList.remove("pulsar-buscando");
+      radarSweep.style.background = "var(--ac)";
+      radarSweep.style.boxShadow = "0 0 6px var(--ac)";
+    }
+    if (tickerCountdown) {
+      tickerCountdown.textContent = `MILVUS: ${s}s`;
+      tickerCountdown.classList.remove("pulsar-text");
+    }
+    if (termBadge) {
+      termBadge.innerHTML = `<span class="pulse-dot"></span> ${s}s`;
+    }
+  } else {
+    // Ao atingir 0s, alterar o indicador para BUSCANDO NO MILVUS... com animação pulsar
+    if (radarSweep) {
+      radarSweep.classList.add("pulsar-buscando");
+      radarSweep.style.background = "#fbbf24";
+      radarSweep.style.boxShadow = "0 0 12px #fbbf24";
+    }
+    if (tickerCountdown) {
+      tickerCountdown.textContent = "BUSCANDO NO MILVUS...";
+      tickerCountdown.classList.add("pulsar-text");
+    }
+    if (termBadge) {
+      termBadge.innerHTML = `<span class="pulse-dot warning pulsar-buscando"></span> BUSCANDO...`;
+    }
   }
 }
 

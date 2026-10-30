@@ -215,9 +215,11 @@ class AutoDispatcher:
         self,
         settings: Settings | None = None,
         cache: LocalCache | None = None,
+        read_only: bool = False,
     ) -> None:
         self.settings = settings or get_settings()
-        self.cache = cache or LocalCache(settings=self.settings)
+        self.read_only = read_only
+        self.cache = cache or LocalCache(settings=self.settings, read_only=read_only)
         self.db_path = Path(self.settings.duckdb_path)
         self._round_robin_counter: int = 0
         self.historico_atribuicoes: list[AtribuicaoRegistro] = []
@@ -230,8 +232,16 @@ class AutoDispatcher:
         self._ultima_atribuicao_sessao: dict[str, datetime] = {}
 
     def _obter_conexao(self, read_only: bool = True) -> duckdb.DuckDBPyConnection:
-        """Abre conexão com o banco DuckDB configurado."""
-        return duckdb.connect(str(self.db_path), read_only=read_only)
+        """Abre conexão com o banco DuckDB configurado com retry resiliente em concorrência."""
+        import time
+        for tentativa in range(5):
+            try:
+                return duckdb.connect(str(self.db_path), read_only=read_only)
+            except duckdb.ConnectionException as e:
+                if tentativa < 4 and "different configuration" in str(e):
+                    time.sleep(0.03)
+                    continue
+                raise
 
     def calcular_scores_pool(self) -> dict[OperadorElegivel, ScoreOperador]:
         """Calcula o Score de Carga Ponderada de todos os 6 operadores elegíveis via DuckDB.
@@ -663,35 +673,42 @@ class AutoDispatcher:
     ) -> None:
         """Persiste a atribuição e dados de triagem do chamado no DuckDB local."""
         val = str(chamado_id_ou_codigo).lstrip("#").strip()
-        try:
-            with self._obter_conexao(read_only=False) as con:
-                con.execute(
-                    """
-                    UPDATE chamados
-                    SET tecnico = ?,
-                        email_tecnico = ?,
-                        mesa_trabalho = ?,
-                        status = 'A fazer',
-                        prioridade = COALESCE(?, prioridade),
-                        tipo_ticket = COALESCE(?, tipo_ticket),
-                        categoria_primaria = COALESCE(?, categoria_primaria),
-                        categoria_secundaria = COALESCE(?, categoria_secundaria),
-                        contato = COALESCE(?, contato),
-                        atualizado_em = now()
-                    WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?
-                    """,
-                    [
-                        operador.nome,
-                        operador.email,
-                        operador.nome,
-                        prioridade,
-                        tipo_ticket,
-                        categoria_primaria,
-                        categoria_secundaria,
-                        contato_nome,
-                        val,
-                        val,
-                    ],
-                )
-        except Exception as e:
-            console.print(f"[dim yellow]Aviso ao atualizar chamado no DuckDB: {e}[/dim yellow]")
+        import time
+        for tentativa in range(5):
+            try:
+                with self._obter_conexao(read_only=False) as con:
+                    con.execute(
+                        """
+                        UPDATE chamados
+                        SET tecnico = ?,
+                            email_tecnico = ?,
+                            mesa_trabalho = ?,
+                            status = 'A fazer',
+                            prioridade = COALESCE(?, prioridade),
+                            tipo_ticket = COALESCE(?, tipo_ticket),
+                            categoria_primaria = COALESCE(?, categoria_primaria),
+                            categoria_secundaria = COALESCE(?, categoria_secundaria),
+                            contato = COALESCE(?, contato),
+                            atualizado_em = now()
+                        WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?
+                        """,
+                        [
+                            operador.nome,
+                            operador.email,
+                            operador.nome,
+                            prioridade,
+                            tipo_ticket,
+                            categoria_primaria,
+                            categoria_secundaria,
+                            contato_nome,
+                            val,
+                            val,
+                        ],
+                    )
+                break
+            except Exception as e:
+                if tentativa < 4 and "different configuration" in str(e):
+                    time.sleep(0.04)
+                    continue
+                console.print(f"[dim yellow]Aviso ao atualizar chamado no DuckDB: {e}[/dim yellow]")
+                break

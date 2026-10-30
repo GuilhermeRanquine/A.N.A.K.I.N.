@@ -13,6 +13,7 @@ from anakin.dispatch.auto_dispatcher import (
     eh_chamado_sem_tecnico,
     SecurityDispatchError,
 )
+from anakin.dispatch.dispatcher_worker import DispatcherWorker
 from anakin.dispatch.ticket_triage_ai import (
     TicketTriageAI,
     ResultadoTriagemIA,
@@ -22,6 +23,7 @@ from anakin.dispatch.ticket_triage_ai import (
 
 __all__ = [
     "AutoDispatcher",
+    "DispatcherWorker",
     "OperadorElegivel",
     "ScoreOperador",
     "OPERADORES_ELEGIVEIS",

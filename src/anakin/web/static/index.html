@@ -409,7 +409,7 @@
         <div class="ticker-item"><i class="green pulse-dot"></i> <span>STREAM: LIVE</span></div>
         <div class="ticker-item"><i></i> <span id="ticker-milvus">MILVUS: READ-ONLY LOCK</span></div>
         <div class="ticker-item"><i></i> <span id="ticker-duckdb">DUCKDB: READ_ONLY=TRUE</span></div>
-        <div class="ticker-item"><i></i> <span id="ticker-rate">RATE LIMIT: 62s</span></div>
+        <div class="ticker-item" id="tactical-countdown-item"><i id="radar-sweep" class="pulse-dot"></i> <span id="ticker-countdown">MILVUS: 62s</span></div>
         <div class="ticker-item"><span class="hud-badge solid" style="background:var(--ac);color:var(--bg)">SECURED RO</span></div>
       </div>
 
@@ -577,7 +577,7 @@
           <header>
             <span class="tag">TTY</span>
             <span>DISPATCHER & AI TELEMETRY</span>
-            <small><span class="pulse-dot"></span> LIVE</small>
+            <small id="terminal-countdown-badge"><span class="pulse-dot"></span> LIVE</small>
           </header>
           <div class="hud-terminal terminal-container" style="border:0;background:transparent;">
             <div class="term-head" style="background:transparent;">

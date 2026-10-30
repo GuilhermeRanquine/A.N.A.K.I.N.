@@ -531,3 +531,34 @@ input[type="range"].hud-range:focus-visible { outline: 1px solid var(--ac-line);
 .hud-cal .day.pad:hover { border-color: transparent; }
 .hud-cal .day.today { color: var(--ac); border-color: var(--ac-line); }
 .hud-cal .day.sel { background: var(--fg); color: var(--bg); }
+
+/* ---------- Cronômetro e Radar Tático SSE ---------- */
+@keyframes pulsarRadar {
+  0% { transform: scale(0.9); opacity: 0.5; }
+  50% { transform: scale(1.4); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.5; }
+}
+
+.pulsar-buscando {
+  animation: pulsarRadar 0.8s ease-in-out infinite;
+}
+
+@keyframes pulsarTextoMilvus {
+  0% { opacity: 0.7; }
+  50% { opacity: 1; color: #fbbf24; }
+  100% { opacity: 0.7; }
+}
+
+.pulsar-text {
+  font-weight: 500;
+  animation: pulsarTextoMilvus 0.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulsar-buscando,
+  .pulsar-text {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+

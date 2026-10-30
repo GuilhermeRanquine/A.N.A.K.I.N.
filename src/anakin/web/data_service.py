@@ -78,7 +78,15 @@ class AnakinDataService:
         """Abre conexão com o DuckDB estritamente em modo Somente Leitura (read_only=True)."""
         if not self.db_path.exists():
             raise FileNotFoundError(f"Banco de dados local não encontrado em: {self.db_path}")
-        return duckdb.connect(str(self.db_path), read_only=True)
+        import time
+        for tentativa in range(5):
+            try:
+                return duckdb.connect(str(self.db_path), read_only=True)
+            except duckdb.ConnectionException as e:
+                if tentativa < 4 and "different configuration" in str(e):
+                    time.sleep(0.03)
+                    continue
+                raise
 
     def obter_status_geral(self) -> dict[str, Any]:
         """Calcula o panorama geral da aplicação, contadores e integridade da rede."""
@@ -320,7 +328,7 @@ class AnakinDataService:
 
     def obter_pool_atendimento(self) -> dict[str, Any]:
         """Calcula o status do Pool de Atendimento N1/N2 e scores de carga ponderada."""
-        dispatcher = AutoDispatcher(settings=self.settings)
+        dispatcher = AutoDispatcher(settings=self.settings, read_only=True)
         scores = dispatcher.calcular_scores_pool()
 
         # Próximos candidatos por nível
