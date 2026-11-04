@@ -275,7 +275,7 @@ async def toggle_operador_status(request: Request) -> dict[str, Any]:
         return {"status": "error", "mensagem": "E-mail ou nome do operador é obrigatório."}
 
     # Atualiza no dispatcher local
-    dispatcher = AutoDispatcher(settings=get_settings(), read_only=False)
+    dispatcher = AutoDispatcher(settings=get_settings(), read_only=True)
     dispatcher.definir_status_operador(identificador, online)
 
     # Se o worker estiver rodando no mesmo processo, sincroniza sua instância ativa
@@ -308,7 +308,7 @@ async def toggle_all_operadores_status(request: Request) -> dict[str, Any]:
     corpo = await request.json()
     online = bool(corpo.get("online", True))
 
-    dispatcher = AutoDispatcher(settings=get_settings(), read_only=False)
+    dispatcher = AutoDispatcher(settings=get_settings(), read_only=True)
     status_map = dispatcher.definir_status_todos(online)
 
     worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
