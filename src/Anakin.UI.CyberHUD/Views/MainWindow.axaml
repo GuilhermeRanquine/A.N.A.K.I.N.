@@ -1,0 +1,136 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Anakin.UI.CyberHUD.ViewModels"
+        x:Class="Anakin.UI.CyberHUD.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="A.N.A.K.I.N — Tactical CyberHUD"
+        Width="1280" Height="800"
+        Background="#07090E">
+
+    <Grid RowDefinitions="Auto, *, Auto" Margin="16">
+        <!-- CABEÇALHO TÁTICO -->
+        <Border Grid.Row="0" Background="#0E1420" BorderBrush="#00F3FF" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,14" BoxShadow="0 0 12 1 #00F3FF22">
+            <Grid ColumnDefinitions="Auto, *, Auto">
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="12">
+                    <TextBlock Text="[ A.N.A.K.I.N ]" Foreground="#00F3FF" FontWeight="Bold" FontSize="18" VerticalAlignment="Center" />
+                    <TextBlock Text="TACTICAL CYBERHUD v2.0" Foreground="#E0E6ED" FontSize="16" VerticalAlignment="Center" />
+                    <Border Background="#00FFA322" BorderBrush="#00FFA3" BorderThickness="1" CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding StatusMotor}" Foreground="#00FFA3" FontSize="11" FontWeight="Bold" />
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="20">
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="PENDENTES" Foreground="#8A99AD" FontSize="10" />
+                        <TextBlock Text="{Binding TotalChamadosPendentes}" Foreground="#FFB703" FontSize="16" FontWeight="Bold" />
+                    </StackPanel>
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="CARGA MÉDIA" Foreground="#8A99AD" FontSize="10" />
+                        <TextBlock Text="{Binding ScoreCargaMedia}" Foreground="#00F3FF" FontSize="16" FontWeight="Bold" />
+                    </StackPanel>
+                    <Button Command="{Binding DespacharProximoChamadoCommand}"
+                            Background="#00F3FF" Foreground="#07090E" FontWeight="Bold" Padding="14,6" CornerRadius="4">
+                        ⚡ DESPACHAR PRÓXIMO
+                    </Button>
+                    <Button Command="{Binding SimularNovoChamadoCommand}"
+                            Background="#0E1420" BorderBrush="#00FFA3" BorderThickness="1" Foreground="#00FFA3" FontWeight="Bold" Padding="12,6" CornerRadius="4">
+                        + NOVO INCIDENTE
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- CORPO PRINCIPAL (3 COLUNAS) -->
+        <Grid Grid.Row="1" ColumnDefinitions="320, *, 360" Margin="0,0,0,14">
+            <!-- COLUNA 1: FROTA DE OPERADORES -->
+            <Border Grid.Column="0" Background="#0E1420" BorderBrush="#00F3FF33" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,10,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="◈ FROTA DE OPERADORES (N1/N2)" Foreground="#00F3FF" FontWeight="Bold" FontSize="12" Margin="0,0,0,10" />
+                    <ListBox ItemsSource="{Binding Operadores}" Background="Transparent">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#07090E" BorderBrush="#00F3FF22" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,8">
+                                    <Grid ColumnDefinitions="*, Auto">
+                                        <StackPanel Grid.Column="0" Spacing="2">
+                                            <TextBlock Text="{Binding Nome}" Foreground="#E0E6ED" FontWeight="Bold" FontSize="12" />
+                                            <TextBlock Text="{Binding Email}" Foreground="#8A99AD" FontSize="10" />
+                                            <TextBlock Text="{Binding Tier, StringFormat='Tier: {0}'}" Foreground="#00FFA3" FontSize="10" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                        <Border Grid.Column="1" Background="#00F3FF11" BorderBrush="#00F3FF" BorderThickness="1" CornerRadius="4" Padding="6,4" VerticalAlignment="Center">
+                                            <StackPanel Orientation="Horizontal" Spacing="3">
+                                                <TextBlock Text="Score:" Foreground="#8A99AD" FontSize="10" />
+                                                <TextBlock Text="{Binding ScoreCargaAtual}" Foreground="#00F3FF" FontWeight="Bold" FontSize="12" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <!-- COLUNA 2: FILA DE CHAMADOS ATIVOS -->
+            <Border Grid.Column="1" Background="#0E1420" BorderBrush="#00F3FF33" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,10,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="◈ FILA DE INCIDENTES PARA ATRIBUIÇÃO" Foreground="#00F3FF" FontWeight="Bold" FontSize="12" Margin="0,0,0,10" />
+                    <ListBox ItemsSource="{Binding FilaChamados}" Background="Transparent">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#07090E" BorderBrush="#FF005533" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,0,0,8">
+                                    <Grid ColumnDefinitions="Auto, *, Auto">
+                                        <Border Grid.Column="0" Background="#FF005522" BorderBrush="#FF0055" BorderThickness="1" CornerRadius="4" Padding="6,4" VerticalAlignment="Center" Margin="0,0,10,0">
+                                            <TextBlock Text="{Binding Prioridade}" Foreground="#FF0055" FontWeight="Bold" FontSize="10" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Spacing="2">
+                                            <TextBlock Text="{Binding Titulo}" Foreground="#E0E6ED" FontWeight="Bold" FontSize="12" />
+                                            <TextBlock Text="{Binding Cliente, StringFormat='Cliente: {0}'}" Foreground="#8A99AD" FontSize="11" />
+                                            <TextBlock Text="{Binding Categoria, StringFormat='Categoria: {0}'}" Foreground="#00FFA3" FontSize="10" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="{Binding Id, StringFormat='#{0}'}" Foreground="#00F3FF" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <!-- COLUNA 3: AUDITORIA, TELEMETRIA & VOZ AO VIVO -->
+            <Border Grid.Column="2" Background="#0E1420" BorderBrush="#00F3FF33" BorderThickness="1" CornerRadius="6" Padding="12">
+                <DockPanel>
+                    <Grid DockPanel.Dock="Top" ColumnDefinitions="*, Auto" Margin="0,0,0,8">
+                        <TextBlock Grid.Column="0" Text="◈ CONSOLE DE TELEMETRIA &amp; AUDITORIA" Foreground="#00F3FF" FontWeight="Bold" FontSize="12" />
+                        <Button Grid.Column="1" Command="{Binding LimparLogsCommand}" Background="Transparent" Foreground="#8A99AD" FontSize="10" Padding="4,2">
+                            LIMPAR
+                        </Button>
+                    </Grid>
+
+                    <Border DockPanel.Dock="Top" Background="#07090E" BorderBrush="#00FFA333" BorderThickness="1" CornerRadius="4" Padding="8" Margin="0,0,0,8">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="VOZ GEMINI LIVE API" Foreground="#00FFA3" FontSize="10" FontWeight="Bold" />
+                            <TextBlock Text="{Binding StatusGeminiLive}" Foreground="#E0E6ED" FontSize="10" />
+                            <TextBlock Text="Tool Calling: ConsultarStatusChamado, DespacharChamado" Foreground="#8A99AD" FontSize="9" />
+                        </StackPanel>
+                    </Border>
+
+                    <ListBox ItemsSource="{Binding LogsOperacionais}" Background="#07090E" CornerRadius="4">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Foreground="#00FFA3" FontSize="11" FontFamily="Consolas, monospace" Margin="4,2" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- RODAPÉ TÁTICO -->
+        <Border Grid.Row="2" Background="#0E1420" BorderBrush="#00F3FF22" BorderThickness="1" CornerRadius="6" Padding="10">
+            <Grid ColumnDefinitions="*, Auto">
+                <TextBlock Grid.Column="0" Text="A.N.A.K.I.N SYSTEM CORE // .NET 9.0 LTS // C# 13 // AVALONIA UI GPU SKIA // DUCKDB.NET VECTORIZED" Foreground="#8A99AD" FontSize="10" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="ZERO-ALLOCATION IN HOT PATHS // RESILIENCE SECURED (POLLY v8)" Foreground="#00FFA3" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

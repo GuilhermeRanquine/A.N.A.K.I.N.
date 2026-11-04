@@ -37,3 +37,14 @@ ultima_resposta_agente.md
 
 # Saídas e Logs
 *.log
+
+# .NET Build Artifacts
+bin/
+obj/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+.dotnet/
+TestResults/
+

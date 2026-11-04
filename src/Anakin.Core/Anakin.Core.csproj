@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Anakin.Core</RootNamespace>
+    <AssemblyName>Anakin.Core</AssemblyName>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,13 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Anakin.UI.CyberHUD.App"
+             RequestedThemeVariant="Dark">
+    <Application.Styles>
+        <FluentTheme />
+        <!-- Estilos Globais do CyberHUD -->
+        <Style Selector="Window">
+            <Setter Property="Background" Value="#07090E" />
+            <Setter Property="FontFamily" Value="Consolas, 'Cascadia Code', monospace" />
+        </Style>
+    </Application.Styles>
+</Application>
