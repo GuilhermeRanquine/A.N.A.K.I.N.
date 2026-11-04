@@ -88,14 +88,15 @@ class AnakinDataService:
                     continue
                 raise
 
-    def obter_status_geral(self) -> dict[str, Any]:
-        """Calcula o panorama geral da aplicação, contadores e integridade da rede."""
+    def obter_status_geral(self, dias_janela: int = 30) -> dict[str, Any]:
+        """Calcula o panorama geral da aplicação, contadores e integridade da rede na janela de no máximo 30 dias."""
+        where_30d = f"COALESCE(TRY_CAST(data_criacao AS TIMESTAMP), atualizado_em) >= CURRENT_TIMESTAMP - INTERVAL {dias_janela} DAY"
         with self._obter_conexao() as con:
-            total_tickets = con.execute("SELECT COUNT(*) FROM chamados").fetchone()[0]
+            total_tickets = con.execute(f"SELECT COUNT(*) FROM chamados WHERE {where_30d}").fetchone()[0]
 
-            # Contadores por status
+            # Contadores por status na janela de 30 dias
             rows_status = con.execute(
-                "SELECT LOWER(TRIM(status)), COUNT(*) FROM chamados GROUP BY 1"
+                f"SELECT LOWER(TRIM(status)), COUNT(*) FROM chamados WHERE {where_30d} GROUP BY 1"
             ).fetchall()
             status_map: dict[str, int] = {}
             for st, cnt in rows_status:
@@ -112,11 +113,12 @@ class AnakinDataService:
             )
             total_abertos = total_tickets - finalizado
 
-            # Chamados sem técnico atribuído
+            # Chamados sem técnico atribuído na janela de 30 dias
             sem_tecnico_row = con.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM chamados
                 WHERE LOWER(status) NOT IN ('finalizado', 'resolvido', 'fechado', 'cancelado')
+                  AND {where_30d}
                   AND (
                     tecnico IS NULL
                     OR TRIM(tecnico) = ''
@@ -142,12 +144,13 @@ class AnakinDataService:
             ).fetchone()
             finalizados_hoje = finalizados_hoje_row[0] if finalizados_hoje_row else 0
 
-            # Métricas de SLA
+            # Métricas de SLA na janela de 30 dias
             rows_sla = con.execute(
-                """
+                f"""
                 SELECT status_sla_solucao, COUNT(*)
                 FROM chamados
                 WHERE LOWER(status) NOT IN ('finalizado', 'resolvido', 'fechado', 'cancelado')
+                  AND {where_30d}
                 GROUP BY 1
                 """
             ).fetchall()
@@ -216,14 +219,19 @@ class AnakinDataService:
         prioridade_filtro: Optional[str] = None,
         tecnico_filtro: Optional[str] = None,
         busca: Optional[str] = None,
+        dias_janela: int = 30,
     ) -> dict[str, Any]:
-        """Consulta paginada e filtrada de chamados ordenada cirurgicamente por criticidade."""
+        """Consulta paginada e filtrada de chamados ordenada dos mais recentes para os mais antigos (janela de 30 dias)."""
         page = max(1, page)
         page_size = max(1, min(100, page_size))
         offset = (page - 1) * page_size
 
         condicoes: list[str] = []
         params: list[Any] = []
+
+        # Janela de no máximo 30 dias para evitar chamados obsoletos
+        if dias_janela > 0:
+            condicoes.append(f"COALESCE(TRY_CAST(data_criacao AS TIMESTAMP), atualizado_em) >= CURRENT_TIMESTAMP - INTERVAL {dias_janela} DAY")
 
         if apenas_abertos:
             condicoes.append("LOWER(status) NOT IN ('finalizado', 'resolvido', 'fechado', 'cancelado')")
@@ -254,29 +262,11 @@ class AnakinDataService:
         # 2. SLA: Estourado=1, Prestes=2, Conformidade=3, Sem SLA=4
         # 3. Status: Atendendo=1, A fazer=2, Pausado=3
         # 4. Data Criação: Mais antigos primeiro
+        # Ordenação cronológica estrita: mais recentes para os mais antigos
         order_clause = """
             ORDER BY
-                CASE
-                    WHEN LOWER(prioridade) LIKE '%crit%' THEN 1
-                    WHEN LOWER(prioridade) LIKE '%alt%' THEN 2
-                    WHEN LOWER(prioridade) LIKE '%med%' THEN 3
-                    WHEN LOWER(prioridade) LIKE '%baix%' THEN 4
-                    WHEN LOWER(prioridade) LIKE '%plan%' THEN 5
-                    ELSE 6
-                END ASC,
-                CASE
-                    WHEN LOWER(status_sla_solucao) LIKE '%estourad%' OR LOWER(status_sla_solucao) LIKE '%vencid%' THEN 1
-                    WHEN LOWER(status_sla_solucao) LIKE '%prestes%' OR LOWER(status_sla_solucao) LIKE '%aten%' THEN 2
-                    WHEN LOWER(status_sla_solucao) LIKE '%conform%' THEN 3
-                    ELSE 4
-                END ASC,
-                CASE
-                    WHEN LOWER(status) LIKE '%atendend%' THEN 1
-                    WHEN LOWER(status) LIKE '%fazer%' THEN 2
-                    WHEN LOWER(status) LIKE '%pausad%' THEN 3
-                    ELSE 4
-                END ASC,
-                data_criacao ASC
+                data_criacao DESC,
+                codigo DESC
         """
 
         count_query = f"SELECT COUNT(*) FROM chamados{where_clause}"
@@ -383,10 +373,11 @@ class AnakinDataService:
             "operadores": operadores_info,
         }
 
-    def obter_metricas_cirurgicas(self) -> dict[str, Any]:
-        """Calcula estatísticas de volumetria, SLA, categorias e outliers de demanda."""
+    def obter_metricas_cirurgicas(self, dias_janela: int = 30) -> dict[str, Any]:
+        """Calcula estatísticas de volumetria, SLA, categorias e outliers na janela de 30 dias."""
+        where_30d = f"COALESCE(TRY_CAST(data_criacao AS TIMESTAMP), atualizado_em) >= CURRENT_TIMESTAMP - INTERVAL {dias_janela} DAY"
         with self._obter_conexao() as con:
-            df = con.execute("SELECT * FROM chamados").df()
+            df = con.execute(f"SELECT * FROM chamados WHERE {where_30d}").df()
 
         if df.empty:
             return {

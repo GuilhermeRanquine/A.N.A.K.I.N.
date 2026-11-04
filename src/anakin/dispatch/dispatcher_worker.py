@@ -91,7 +91,7 @@ class DispatcherWorker:
         """Executa sincronização inicial rápida dos chamados abertos (status=9) no Milvus."""
         try:
             console.print("[dim cyan][DISPATCHER WORKER] Calibrando chamados em aberto no Milvus (status=9)...[/dim cyan]")
-            tickets_iniciais = await self.readonly_client.listar_chamados(status=9, total_registros=100, pagina=1)
+            tickets_iniciais = await self.readonly_client.listar_chamados(status=9, total_registros=250, pagina=1)
             if tickets_iniciais:
                 self.cache.salvar_chamados(tickets_iniciais)
                 self.cache.sincronizar_status_abertos([t.codigo for t in tickets_iniciais if t.codigo])
@@ -194,19 +194,14 @@ class DispatcherWorker:
             detalhes={"tipo": "countdown", "segundos": 0, "total": self.intervalo_segundos, "status": "buscando"},
         )
 
-        # 3. Consulta chamados no Milvus
+        # 3. Consulta e sincronização contínua de chamados no Milvus (status=9: Abertos, Pausados, Em atendimento, A fazer)
         novos_pendentes: list[TicketSummary] = []
         try:
-            tickets_a_fazer = await self.readonly_client.listar_chamados(status=1, total_registros=50, pagina=1)
-            if tickets_a_fazer:
-                self.cache.salvar_chamados(tickets_a_fazer)
-                novos_pendentes = self.dispatcher.identificar_chamados_pendentes(tickets_a_fazer)
-
-            if not novos_pendentes:
-                tickets_abertos = await self.readonly_client.listar_chamados(status=9, total_registros=50, pagina=1)
-                if tickets_abertos:
-                    self.cache.salvar_chamados(tickets_abertos)
-                    novos_pendentes = self.dispatcher.identificar_chamados_pendentes(tickets_abertos)
+            tickets_abertos = await self.readonly_client.listar_chamados(status=9, total_registros=250, pagina=1)
+            if tickets_abertos:
+                self.cache.salvar_chamados(tickets_abertos)
+                self.cache.sincronizar_status_abertos([t.codigo for t in tickets_abertos if t.codigo])
+                novos_pendentes = self.dispatcher.identificar_chamados_pendentes(tickets_abertos)
         except Exception as e:
             registrar_evento(
                 origem="DISPATCHER",

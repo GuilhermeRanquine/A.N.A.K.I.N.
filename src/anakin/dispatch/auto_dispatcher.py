@@ -280,6 +280,7 @@ class AutoDispatcher:
                                 MAX(COALESCE(data_criacao, '')) AS max_data
                             FROM chamados
                             WHERE LOWER(status) NOT IN ('finalizado', 'resolvido', 'fechado', 'cancelado')
+                              AND COALESCE(TRY_CAST(data_criacao AS TIMESTAMP), atualizado_em) >= CURRENT_TIMESTAMP - INTERVAL 30 DAY
                               AND (
                                   LOWER(email_tecnico) = LOWER(?)
                                   OR (
@@ -462,12 +463,22 @@ class AutoDispatcher:
     def identificar_chamados_pendentes(
         self,
         tickets: list[TicketSummary],
+        max_dias: int = 30,
     ) -> list[TicketSummary]:
-        """Filtra e retorna apenas chamados que ainda não possuem operador/técnico atribuído."""
+        """Filtra e retorna apenas chamados sem técnico atribuído na janela de no máximo 30 dias."""
         pendentes: list[TicketSummary] = []
+        agora = datetime.now()
         for t in tickets:
-            if eh_chamado_sem_tecnico(t):
-                pendentes.append(t)
+            if not eh_chamado_sem_tecnico(t):
+                continue
+            if t.data_criacao:
+                try:
+                    dt = datetime.fromisoformat(str(t.data_criacao).strip()[:19])
+                    if (agora - dt).days > max_dias:
+                        continue
+                except Exception:
+                    pass
+            pendentes.append(t)
         return pendentes
 
     async def despachar_chamado(

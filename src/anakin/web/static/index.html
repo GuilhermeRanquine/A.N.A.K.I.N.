@@ -6,6 +6,7 @@
   <title>A.N.A.K.I.N // OPERATIONAL HUD CONSOLE</title>
   <link rel="stylesheet" href="css/hud.css">
   <link rel="stylesheet" href="css/hud-components.css">
+  <script src="js/vendor/three.min.js"></script>
   <style>
     /* Estilos e adaptações do console para a arquitetura A.N.A.K.I.N */
     :root {
@@ -424,6 +425,17 @@
           <button data-scheme="dark" class="on">DARK</button>
           <button data-scheme="light">LIGHT</button>
         </div>
+        <!-- Seletor e Configuração Modular do Grid -->
+        <div style="position:relative;display:inline-block;">
+          <button class="hud-btn" id="btn-custom-grid" title="Personalizar e Reordenar Janelas do Grid" style="padding:3px 8px;font-size:9px;letter-spacing:0.08em;">☷ GRID</button>
+          <div class="grid-customizer-drawer" id="grid-customizer-drawer">
+            <div class="customizer-head">
+              <b>JANELAS DO GRID</b>
+              <button class="hud-btn" id="btn-reset-grid-layout" style="font-size:8px;padding:2px 6px;">↺ RESET</button>
+            </div>
+            <div class="customizer-list" id="customizer-widget-list"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Relógio HUD Sincronizado -->
@@ -477,7 +489,7 @@
       <!-- ===== COLUNA ESQUERDA: POOL DE DESPACHO E CARGA ===== -->
       <aside class="left-column" style="display:flex;flex-direction:column;gap:12px;">
         <!-- Painel do Pool de Técnicos -->
-        <section class="hud-panel">
+        <section class="hud-panel" data-widget-id="pool-despacho">
           <header>
             <span class="tag">P1</span>
             <span>POOL DE DESPACHO</span>
@@ -497,7 +509,7 @@
         </section>
 
         <!-- Painel de Métricas Cirúrgicas de SLA -->
-        <section class="hud-panel">
+        <section class="hud-panel" data-widget-id="saude-sla">
           <header>
             <span class="tag">P2</span>
             <span>SAÚDE DO SLA & PRIORIDADES</span>
@@ -512,7 +524,7 @@
       </aside>
 
       <!-- ===== COLUNA CENTRAL: TABELA DE CHAMADOS AO VIVO ===== -->
-      <section class="hud-panel center-column">
+      <section class="hud-panel center-column" data-widget-id="chamados-aovivo">
         <header>
           <span class="tag">T1</span>
           <span>CHAMADOS AO VIVO</span>
@@ -570,10 +582,31 @@
         </div>
       </section>
 
-      <!-- ===== COLUNA DIREITA: TERMINAL STREAM & RELATÓRIOS ===== -->
+            <!-- ===== COLUNA DIREITA: TERMINAL STREAM & RELATÓRIOS ===== -->
       <aside class="right-column" style="display:flex;flex-direction:column;gap:12px;">
+        <!-- Painel Holográfico 3D (Sede Freguesia UPGrade TI / Globo) -->
+        <section class="hud-panel" data-widget-id="holo-3d" id="panel-holo-3d">
+          <header>
+            <span class="tag">3D-HOLO</span>
+            <span>FREGUESIA, UPGRADE TI</span>
+            <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
+              <span class="holo-badge" id="holo-mode-indicator">SEDE FREGUESIA</span>
+              <div class="hud-segmented" style="height:20px;">
+                <button class="holo-mode-btn on" data-mode="building" title="Visualizar Sede UPGrade TI">🏢 SEDE</button>
+                <button class="holo-mode-btn" data-mode="globe" title="Visualizar Globo Terrestre">🌍 GLOBO</button>
+              </div>
+            </div>
+          </header>
+          <div class="panel-body" style="padding:0;position:relative;overflow:hidden;">
+            <div id="hologram-viewport"></div>
+            <div class="holo-overlay-reticle">
+              <div class="holo-coords">22°56'S 43°20'W // ELEV: 18m</div>
+              <div class="holo-hint">ARRASTE 360° | SCROLL ZOOM</div>
+            </div>
+          </div>
+        </section>
         <!-- Terminal de Logs ao Vivo (SSE) -->
-        <section class="hud-panel terminal-panel">
+        <section class="hud-panel terminal-panel" data-widget-id="telemetria-ia">
           <header>
             <span class="tag">TTY</span>
             <span>DISPATCHER & AI TELEMETRY</span>
@@ -594,7 +627,7 @@
         </section>
 
         <!-- Painel de Demandas & Outliers -->
-        <section class="hud-panel">
+        <section class="hud-panel" data-widget-id="categorias-analytics">
           <header>
             <span class="tag">R1</span>
             <span>CATEGORIAS & ANOMALIAS (Z-SCORE)</span>

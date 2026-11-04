@@ -41,6 +41,18 @@ class TestHudServer(unittest.TestCase):
         self.assertEqual(resp_js.status_code, 200)
         self.assertIn("carregarStatus", resp_js.text)
 
+        # Valida novos módulos de Holograma 3D e Grid Manager
+        resp_three = self.client.get("/js/vendor/three.min.js")
+        self.assertEqual(resp_three.status_code, 200)
+
+        resp_holo = self.client.get("/js/hologram-3d.js")
+        self.assertEqual(resp_holo.status_code, 200)
+        self.assertIn("Hologram3DViewer", resp_holo.text)
+
+        resp_grid = self.client.get("/js/grid-manager.js")
+        self.assertEqual(resp_grid.status_code, 200)
+        self.assertIn("HudGridManager", resp_grid.text)
+
     def test_api_status_readonly(self) -> None:
         """Verifica se /api/status retorna os contadores do DuckDB e a trava Read-Only ativa."""
         resp = self.client.get("/api/status")

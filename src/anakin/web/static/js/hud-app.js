@@ -5,6 +5,8 @@
 
 import { refreshPalette, pal } from "./core/palette.js";
 import { startSparks } from "./core/sparks.js";
+import { Hologram3DViewer } from "./hologram-3d.js";
+import { HudGridManager } from "./grid-manager.js";
 
 // Estado global da aplicação
 const state = {
@@ -787,6 +789,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Inicia streaming contínuo
   initSSE();
+
+  // Inicializa o Holograma 3D Interativo (Sede Freguesia UPGrade TI & Globo)
+  try {
+    const holoViewer = new Hologram3DViewer("hologram-viewport");
+    document.querySelectorAll(".holo-mode-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.mode;
+        if (holoViewer) holoViewer.setMode(mode);
+      });
+    });
+  } catch (err) {
+    console.warn("Hologram 3D notice:", err);
+  }
+
+  // Inicializa o Gerenciador de Grid Customizável (Drag & Drop e Layouts)
+  try {
+    new HudGridManager();
+  } catch (err) {
+    console.warn("Grid Manager notice:", err);
+  }
 
   // Polling de fallback leve a cada 15 segundos para os chamados da tabela
   setInterval(() => {
