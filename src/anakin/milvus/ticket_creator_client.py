@@ -31,6 +31,76 @@ MAPA_EMAIL_PARA_NOME_OPERADOR: dict[str, str] = {
     "kaio.silva@upgradeti.com.br": "Kaio Silva",
 }
 
+# Mapeamento oficial de Mesas de Trabalho cadastradas no Milvus para os operadores elegíveis.
+# O Milvus valida estritamente o campo 'chamado_mesa' contra as mesas existentes:
+# 'Gabryel Santos' -> mesa 'Gabryel'
+# 'Guilherme Maganha' -> mesa 'Guilherme'
+MAPA_OPERADOR_PARA_MESA_MILVUS: dict[str, str] = {
+    # Por e-mail
+    "carlos.bucazio@upgradeti.com.br": "Carlos Eduardo",
+    "gabriel@upgradeti.com.br": "Gabriel Oliveira",
+    "gabryel.santos@upgradeti.com.br": "Gabryel",
+    "gabriel.sena@upgradeti.com.br": "Gabriel Sena",
+    "guilherme.melo@upgradeti.com.br": "Guilherme",
+    "kaio.silva@upgradeti.com.br": "Kaio Silva",
+    # Por nome de exibição
+    "carlos eduardo": "Carlos Eduardo",
+    "gabriel oliveira": "Gabriel Oliveira",
+    "gabryel santos": "Gabryel",
+    "gabryel": "Gabryel",
+    "gabriel sena": "Gabriel Sena",
+    "guilherme maganha": "Guilherme",
+    "guilherme": "Guilherme",
+    "kaio silva": "Kaio Silva",
+}
+
+# Mapeamento oficial de Setores cadastrados no Milvus para os operadores elegíveis.
+MAPA_OPERADOR_PARA_SETOR_MILVUS: dict[str, str] = {
+    # Por e-mail
+    "carlos.bucazio@upgradeti.com.br": "Carlos Eduardo",
+    "gabriel@upgradeti.com.br": "Gabriel Oliveira",
+    "gabryel.santos@upgradeti.com.br": "Gabryel Santos",
+    "gabriel.sena@upgradeti.com.br": "Gabriel Sena",
+    "guilherme.melo@upgradeti.com.br": "Guilherme",
+    "kaio.silva@upgradeti.com.br": "Kaio Silva",
+    # Por nome de exibição
+    "carlos eduardo": "Carlos Eduardo",
+    "gabriel oliveira": "Gabriel Oliveira",
+    "gabryel santos": "Gabryel Santos",
+    "gabryel": "Gabryel Santos",
+    "gabriel sena": "Gabriel Sena",
+    "guilherme maganha": "Guilherme",
+    "guilherme": "Guilherme",
+    "kaio silva": "Kaio Silva",
+}
+
+
+def resolver_mesa_milvus(email_ou_nome: Optional[str]) -> str:
+    """Resolve a mesa de trabalho oficial registrada no Milvus."""
+    if not email_ou_nome:
+        return ""
+    alvo = email_ou_nome.strip().lower()
+    if alvo in MAPA_OPERADOR_PARA_MESA_MILVUS:
+        return MAPA_OPERADOR_PARA_MESA_MILVUS[alvo]
+    for k, v in MAPA_OPERADOR_PARA_MESA_MILVUS.items():
+        if k in alvo or alvo in k:
+            return v
+    return email_ou_nome.strip()
+
+
+def resolver_setor_milvus(email_ou_nome: Optional[str]) -> str:
+    """Resolve o setor oficial registrado no Milvus."""
+    if not email_ou_nome:
+        return ""
+    alvo = email_ou_nome.strip().lower()
+    if alvo in MAPA_OPERADOR_PARA_SETOR_MILVUS:
+        return MAPA_OPERADOR_PARA_SETOR_MILVUS[alvo]
+    for k, v in MAPA_OPERADOR_PARA_SETOR_MILVUS.items():
+        if k in alvo or alvo in k:
+            return v
+    return email_ou_nome.strip()
+
+
 
 def obter_prioridades_milvus_validas(duckdb_path: str = "data/anakin_readonly.duckdb") -> list[str]:
     """Descobre a grafia exata usada no Milvus a partir do DuckDB local."""
@@ -478,12 +548,14 @@ class MilvusTicketCreatorClient:
             return False
 
         nome_op = MAPA_EMAIL_PARA_NOME_OPERADOR.get(str(email_tecnico).strip().lower(), "")
+        mesa_op = resolver_mesa_milvus(email_tecnico) or str(nome_op)
+        setor_op = resolver_setor_milvus(email_tecnico) or str(nome_op)
 
         client = await self._obter_client()
         corpo = {
             "chamado_ids": str(target_id),
-            "chamado_mesa": str(nome_op),
-            "chamado_setor": str(nome_op),
+            "chamado_mesa": str(mesa_op),
+            "chamado_setor": str(setor_op),
             "chamado_tecnico": str(email_tecnico).strip(),
         }
 
@@ -491,7 +563,17 @@ class MilvusTicketCreatorClient:
             resp = await client.post("/chamado/atualizar", json=corpo)
             if resp.status_code != 200:
                 console.print(f"[bold red][ERRO MILVUS {resp.status_code}]:[/bold red] {escape(resp.text)}")
-                return False
+                if "chamado_mesa" in resp.text:
+                    mesa_alt = mesa_op.split()[0] if " " in mesa_op else "Upgrade TI"
+                    corpo["chamado_mesa"] = mesa_alt
+                    console.print(
+                        f"[bold yellow][Retry Mesa Milvus][/bold yellow] Milvus rejeitou mesa '{mesa_op}'. "
+                        f"Tentando retry automático com '{mesa_alt}'..."
+                    )
+                    resp = await client.post("/chamado/atualizar", json=corpo)
+                    if resp.status_code != 200:
+                        console.print(f"[bold red][ERRO MILVUS {resp.status_code} no Retry]:[/bold red] {escape(resp.text)}")
+                        return False
 
             data = resp.json()
             if isinstance(data, dict) and data.get("status") is False:
@@ -531,6 +613,7 @@ class MilvusTicketCreatorClient:
         2. Payload estrito e padronizado (sem chaves duplicadas ou inválidas).
         3. Diagnóstico transparente de erros da API ([ERRO MILVUS {status_code}]: {texto}).
         4. Tratamento resiliente da prioridade com retry numérico instantâneo se formato textual for rejeitado.
+        5. Mapeamento estrito da mesa e setor cadastrados no Milvus com retry automático.
         """
         self._validar_rota("POST", "/chamado/atualizar")
         await self._aguardar_rate_limit()
@@ -543,12 +626,15 @@ class MilvusTicketCreatorClient:
             )
             return False
 
-        # 2. Resolução do nome do operador caso venha apenas o e-mail
+        # 2. Resolução do nome, mesa e setor normalizados para o Milvus
         nome_final = nome_operador
         if not nome_final and email_tecnico:
             nome_final = MAPA_EMAIL_PARA_NOME_OPERADOR.get(email_tecnico.strip().lower(), "")
         if not nome_final:
             nome_final = ""
+
+        mesa_final = resolver_mesa_milvus(email_tecnico or nome_final) or nome_final
+        setor_final = resolver_setor_milvus(email_tecnico or nome_final) or nome_final
 
         # 3. Tratamento Resiliente da Prioridade (Canônica e Numérica)
         prioridade_texto = normalizar_prioridade_texto(prioridade)
@@ -557,8 +643,8 @@ class MilvusTicketCreatorClient:
         # 4. Payload Estrito e Padronizado (Sem Chaves Duplicadas ou Inválidas)
         payload: dict[str, Any] = {
             "chamado_ids": str(target_id),
-            "chamado_mesa": str(nome_final),
-            "chamado_setor": str(nome_final),
+            "chamado_mesa": str(mesa_final),
+            "chamado_setor": str(setor_final),
             "chamado_tecnico": str(email_tecnico or "").strip(),
             "chamado_prioridade": str(prioridade_texto),
         }
@@ -578,7 +664,7 @@ class MilvusTicketCreatorClient:
 
         client = await self._obter_client()
 
-        # 5. Tentativa Inicial (Prioridade Canônica Textual)
+        # 5. Tentativa Inicial
         try:
             resp = await client.post("/chamado/atualizar", json=payload)
         except Exception as e:
@@ -589,6 +675,7 @@ class MilvusTicketCreatorClient:
 
         houve_erro = False
         erro_prioridade = False
+        erro_mesa = False
 
         if resp.status_code != 200:
             houve_erro = True
@@ -596,6 +683,8 @@ class MilvusTicketCreatorClient:
             texto_lower = resp.text.lower()
             if any(k in texto_lower for k in ["prioridade", "priority", "chamado_prioridade"]):
                 erro_prioridade = True
+            if any(k in texto_lower for k in ["chamado_mesa", "mesa_trabalho", "mesa", "setor", "chamado_setor"]):
+                erro_mesa = True
         else:
             try:
                 data = resp.json()
@@ -606,42 +695,56 @@ class MilvusTicketCreatorClient:
                     texto_lower = str(msg).lower()
                     if any(k in texto_lower for k in ["prioridade", "priority", "chamado_prioridade"]):
                         erro_prioridade = True
+                    if any(k in texto_lower for k in ["chamado_mesa", "mesa_trabalho", "mesa", "setor", "chamado_setor"]):
+                        erro_mesa = True
             except Exception:
                 pass
 
-        # 6. Retry Automático Instantâneo com Representação Numérica ('1', '2', '3', '4')
-        if houve_erro and erro_prioridade and prio_num != prioridade_texto:
-            console.print(
-                f"[bold yellow][Retry Prioridade Numérica][/bold yellow] Milvus rejeitou prioridade textual "
-                f"'{prioridade_texto}'. Executando retry automático instantâneo com ID numérico '{prio_num}'..."
-            )
-            payload["chamado_prioridade"] = str(prio_num)
-            try:
-                resp_retry = await client.post("/chamado/atualizar", json=payload)
-                if resp_retry.status_code != 200:
-                    console.print(
-                        f"[bold red][ERRO MILVUS {resp_retry.status_code}]:[/bold red] {escape(resp_retry.text)}"
-                    )
-                    return False
+        # 6. Retry Automático Instantâneo para Prioridade e/ou Mesa
+        if houve_erro and (erro_prioridade or erro_mesa):
+            tentar_retry = False
 
+            if erro_mesa:
+                mesa_alt = mesa_final.split()[0] if " " in mesa_final else "Upgrade TI"
+                console.print(
+                    f"[bold yellow][Retry Mesa Milvus][/bold yellow] Milvus rejeitou mesa '{mesa_final}'. "
+                    f"Tentando retry automático com '{mesa_alt}'..."
+                )
+                payload["chamado_mesa"] = mesa_alt
+                tentar_retry = True
+
+            if erro_prioridade and prio_num != prioridade_texto:
+                console.print(
+                    f"[bold yellow][Retry Prioridade Numérica][/bold yellow] Milvus rejeitou prioridade textual "
+                    f"'{prioridade_texto}'. Executando retry automático instantâneo com ID numérico '{prio_num}'..."
+                )
+                payload["chamado_prioridade"] = str(prio_num)
+                tentar_retry = True
+
+            if tentar_retry:
                 try:
-                    data_retry = resp_retry.json()
-                    if isinstance(data_retry, dict) and data_retry.get("status") is False:
-                        msg_retry = data_retry.get("mensagem") or data_retry.get("retorno") or str(data_retry)
-                        console.print(f"[bold red][ERRO MILVUS 200 (Lógico)]:[/bold red] {escape(str(msg_retry))}")
-                        return False
-                except Exception:
-                    pass
-
-                console.print(
-                    f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus (via retry numérico '{prio_num}').[/bold green]"
-                )
-                return True
-            except Exception as e:
-                console.print(
-                    f"[bold red][ERRO MILVUS Conexão (Retry)]:[/bold red] Falha no retry para o chamado #{target_id}: {e}"
-                )
-                return False
+                    resp_retry = await client.post("/chamado/atualizar", json=payload)
+                    if resp_retry.status_code == 200:
+                        try:
+                            data_retry = resp_retry.json()
+                            if not (isinstance(data_retry, dict) and data_retry.get("status") is False):
+                                console.print(
+                                    f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus (via retry resiliente).[/bold green]"
+                                )
+                                return True
+                            else:
+                                msg_retry = data_retry.get("mensagem") or data_retry.get("retorno") or str(data_retry)
+                                console.print(f"[bold red][ERRO MILVUS 200 (Lógico no Retry)]:[/bold red] {escape(str(msg_retry))}")
+                        except Exception:
+                            return True
+                    else:
+                        console.print(
+                            f"[bold red][ERRO MILVUS {resp_retry.status_code} no Retry]:[/bold red] {escape(resp_retry.text)}"
+                        )
+                except Exception as e:
+                    console.print(
+                        f"[bold red][ERRO MILVUS Conexão (Retry)]:[/bold red] Falha no retry para o chamado #{target_id}: {e}"
+                    )
 
         if houve_erro:
             return False

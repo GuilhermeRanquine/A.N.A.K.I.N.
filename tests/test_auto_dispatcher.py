@@ -393,5 +393,27 @@ class TestAutoDispatcher(unittest.TestCase):
         finally:
             disp.definir_status_todos(True)
 
+    def test_resolucao_mesas_oficiais_milvus(self) -> None:
+        """Garante que a mesa de trabalho no Milvus é mapeada corretamente para evitar erro 500 'Campo inválido: chamado_mesa'."""
+        from anakin.milvus.ticket_creator_client import resolver_mesa_milvus
+
+        self.assertEqual(resolver_mesa_milvus("gabryel.santos@upgradeti.com.br"), "Gabryel")
+        self.assertEqual(resolver_mesa_milvus("Gabryel Santos"), "Gabryel")
+        self.assertEqual(resolver_mesa_milvus("guilherme.melo@upgradeti.com.br"), "Guilherme")
+        self.assertEqual(resolver_mesa_milvus("Guilherme Maganha"), "Guilherme")
+        self.assertEqual(resolver_mesa_milvus("carlos.bucazio@upgradeti.com.br"), "Carlos Eduardo")
+        self.assertEqual(resolver_mesa_milvus("gabriel@upgradeti.com.br"), "Gabriel Oliveira")
+        self.assertEqual(resolver_mesa_milvus("gabriel.sena@upgradeti.com.br"), "Gabriel Sena")
+        self.assertEqual(resolver_mesa_milvus("kaio.silva@upgradeti.com.br"), "Kaio Silva")
+
+    def test_resolucao_setores_oficiais_milvus(self) -> None:
+        """Garante que o setor no Milvus é mapeado corretamente."""
+        from anakin.milvus.ticket_creator_client import resolver_setor_milvus
+
+        self.assertEqual(resolver_setor_milvus("gabryel.santos@upgradeti.com.br"), "Gabryel Santos")
+        self.assertEqual(resolver_setor_milvus("guilherme.melo@upgradeti.com.br"), "Guilherme")
+        self.assertEqual(resolver_setor_milvus("carlos.bucazio@upgradeti.com.br"), "Carlos Eduardo")
+
+
 if __name__ == "__main__":
     unittest.main()

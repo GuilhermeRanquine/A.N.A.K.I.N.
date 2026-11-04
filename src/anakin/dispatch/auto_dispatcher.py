@@ -20,7 +20,7 @@ from rich.console import Console
 
 from anakin.config.settings import Settings, get_settings
 from anakin.domain.ticket_models import TicketSummary
-from anakin.milvus.ticket_creator_client import MilvusTicketCreatorClient
+from anakin.milvus.ticket_creator_client import MilvusTicketCreatorClient, resolver_mesa_milvus
 from anakin.storage.local_cache import LocalCache
 
 console = Console()
@@ -766,7 +766,7 @@ class AutoDispatcher:
                         [
                             operador.nome,
                             operador.email,
-                            operador.nome,
+                            resolver_mesa_milvus(operador.email) or operador.nome,
                             prioridade,
                             tipo_ticket,
                             categoria_primaria,
