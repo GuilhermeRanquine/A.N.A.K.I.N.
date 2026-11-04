@@ -19,6 +19,10 @@ class TestHudServer(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.client = TestClient(app)
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.post("/api/operadores/status-all", json={"online": True})
+
     def test_rota_raiz_serve_index_html(self) -> None:
         """Verifica se a rota raiz (/) serve o index.html com o título esperado."""
         resp = self.client.get("/")
