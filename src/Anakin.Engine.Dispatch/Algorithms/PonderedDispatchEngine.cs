@@ -34,7 +34,7 @@ public sealed class PonderedDispatchEngine : IDispatchEngine
         // 1. Filtrar elegíveis: Ativo, Não-Gestor, Não-Bloqueado
         var elegiveis = operadores
             .Where(op => op.Ativo)
-            .Where(op => op.Tier != OperadorTier.Gestao)
+            .Where(op => !string.Equals(op.Tier, nameof(OperadorTier.Gestao), StringComparison.OrdinalIgnoreCase))
             .Where(op => !blocked.Contains(op.Email))
             .ToList();
 
@@ -44,11 +44,14 @@ public sealed class PonderedDispatchEngine : IDispatchEngine
         }
 
         // 2. Determinar Tier alvo com base na prioridade do chamado
-        var tierAlvo = chamado.Prioridade == ChamadoPrioridade.Critica
-            ? OperadorTier.N2
-            : OperadorTier.N1;
+        var isCritico = string.Equals(chamado.Prioridade, "Critica", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(chamado.Prioridade, "Crítico", StringComparison.OrdinalIgnoreCase);
 
-        var poolTier = elegiveis.Where(op => op.Tier == tierAlvo).ToList();
+        var tierAlvo = isCritico ? nameof(OperadorTier.N2) : nameof(OperadorTier.N1);
+
+        var poolTier = elegiveis
+            .Where(op => string.Equals(op.Tier, tierAlvo, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
         // Se não houver operadores no tier alvo, faz fallback para todos os elegíveis
         var candidatos = poolTier.Count > 0 ? poolTier : elegiveis;

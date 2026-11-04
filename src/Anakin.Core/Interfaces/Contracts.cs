@@ -28,6 +28,9 @@ public interface IAnalyticsRepository
     Task<int> ObterScoreOperadorAsync(string operadorEmail, CancellationToken ct = default);
     Task<IReadOnlyList<OperadorModel>> ObterOperadoresAsync(OperadorTier? tier = null, CancellationToken ct = default);
     Task<IReadOnlyList<ChamadoModel>> ObterChamadosNaoAtribuidosAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<OperadorModel>> ObterOperadoresReaisAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<ChamadoModel>> ObterChamadosAtivosReaisAsync(CancellationToken ct = default);
+    Task<DashboardKpiModel> ObterMetricasGeraisAsync(CancellationToken ct = default);
 }
 
 /// <summary>
