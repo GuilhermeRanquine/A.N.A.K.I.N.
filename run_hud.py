@@ -63,8 +63,29 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    from anakin.config.settings import get_settings
+    settings = get_settings()
+
     modo_str = "SIMULAÇÃO (Sem mutações no Milvus)" if args.simulacao else "PRODUÇÃO AO VIVO (Alterações Ativas)"
     worker_str = "DESATIVADO (--sem-despachante)" if args.sem_despachante else f"ATIVO (Janela: {args.intervalo}s)"
+
+    # Prevenção ativa de conflito: detecta se outra instância do A.N.A.K.I.N já está ativa
+    import socket
+    porta_ocupada = False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.4)
+        if s.connect_ex((args.host, args.port)) == 0:
+            porta_ocupada = True
+
+    if porta_ocupada:
+        print("=================================================================")
+        print(f" [!] ALERTA: A porta {args.port} já está em uso por outro processo!")
+        print("=================================================================")
+        print(f" O A.N.A.K.I.N já está em execução e acessível em: http://{args.host}:{args.port}")
+        print("\n Se deseja encerrar a instância anterior para reiniciar, execute no PowerShell:")
+        print(f" Stop-Process -Id (Get-NetTCPConnection -LocalPort {args.port}).OwningProcess -Force\n")
+        print("=================================================================")
+        sys.exit(1)
 
     print("=================================================================")
     print(" 🛸 A.N.A.K.I.N - UNIFIED PROCESS (FASTAPI LIFESPAN + WORKER IA)")
@@ -73,7 +94,7 @@ def main() -> None:
     print(f" [*] Despachante IA:   {worker_str}")
     print(f" [*] URL Local HUD:    http://{args.host}:{args.port}")
     print(f" [*] Canal SSE Stream: http://{args.host}:{args.port}/api/stream")
-    print(f" [*] Cache DuckDB:     data/anakin.duckdb")
+    print(f" [*] Cache DuckDB:     {settings.duckdb_path}")
     print("=================================================================")
     print(" Pressione Ctrl+C para graceful shutdown seguro.\n")
 

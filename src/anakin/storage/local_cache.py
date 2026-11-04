@@ -87,7 +87,21 @@ class LocalCache:
 
     def _inicializar_tabelas(self) -> None:
         """Cria as tabelas analíticas caso não existam e adiciona colunas necessárias."""
-        with self._obter_conexao() as con:
+        try:
+            con_ctx = self._obter_conexao()
+        except Exception as e:
+            if "sendo usado por outro processo" in str(e) or "cannot open file" in str(e).lower():
+                console.print(
+                    "\n[bold red]=================================================================[/bold red]\n"
+                    "[bold red][FALHA DE INICIALIZAÇÃO DUCKDB]: O banco de dados já está em uso![/bold red]\n"
+                    "Outro processo do A.N.A.K.I.N já está rodando em segundo plano e bloqueando o banco.\n"
+                    "Encerre o processo anterior com:\n"
+                    "  [yellow]Stop-Process -Id (Get-NetTCPConnection -LocalPort 7100).OwningProcess -Force[/yellow]\n"
+                    "[bold red]=================================================================[/bold red]\n"
+                )
+            raise
+
+        with con_ctx as con:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chamados (
