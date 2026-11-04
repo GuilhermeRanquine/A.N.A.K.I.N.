@@ -3,16 +3,16 @@
  * Permite movimentar janelas, personalizar visualizações, minimizar e salvar layouts.
  */
 
-const STORAGE_KEY = "anakin_hud_grid_layout_v2";
+const STORAGE_KEY = "anakin_hud_grid_layout_v3";
 
 export class HudGridManager {
   constructor() {
-    this.container = document.querySelector(".dashboard-grid");
-    this.columns = document.querySelectorAll(".left-column, .center-column, .right-column");
+    this.grid = document.querySelector(".dashboard-grid");
+    this.columns = document.querySelectorAll(".grid-column");
     this.draggedPanel = null;
     this.config = this.loadConfig();
 
-    this.initPanelHandles();
+    this.initPanelControls();
     this.initDragAndDrop();
     this.initCustomizerDropdown();
     this.applyConfig();
@@ -35,37 +35,53 @@ export class HudGridManager {
     }
   }
 
-  initPanelHandles() {
+  initPanelControls() {
     const panels = document.querySelectorAll(".hud-panel");
     panels.forEach((panel) => {
       const header = panel.querySelector("header");
       if (!header) return;
 
-      const widgetId = panel.dataset.widgetId || panel.id || header.innerText.trim().slice(0, 16);
+      const widgetId = panel.dataset.widgetId || panel.id || "widget-" + Math.random().toString(36).substring(7);
       panel.dataset.widgetId = widgetId;
 
-      // Adiciona Alça de Arraste (Grip) se ainda não tiver
+      // 1. Alça de Arraste (Grip)
       if (!header.querySelector(".hud-drag-handle")) {
         const grip = document.createElement("span");
         grip.className = "hud-drag-handle";
-        grip.innerHTML = "⋮⋮";
-        grip.title = "Clique e arraste para movimentar esta janela no grid";
+        grip.innerHTML = "⠿ ARRASTAR";
+        grip.title = "Clique e arraste esta janela para qualquer coluna do grid";
         header.insertBefore(grip, header.firstChild);
       }
 
-      // Adiciona Ações de Janela (Minimizar, Expandir, Fechar)
+      // 2. Ações de Janela (Navegação Rápida entre Colunas + Minimizar + Fechar)
       if (!header.querySelector(".hud-window-actions")) {
         const actions = document.createElement("div");
         actions.className = "hud-window-actions";
         actions.innerHTML = `
-          <button class="win-btn win-min" title="Minimizar janela">_</button>
-          <button class="win-btn win-expand" title="Expandir / Restaurar largura">⤢</button>
-          <button class="win-btn win-close" title="Ocultar janela">✕</button>
+          <button class="win-btn win-move-left" title="Mover para coluna da esquerda">◀</button>
+          <button class="win-btn win-move-right" title="Mover para coluna da direita">▶</button>
+          <button class="win-btn win-min" title="Minimizar / Expandir corpo">_</button>
+          <button class="win-btn win-close" title="Ocultar do grid">✕</button>
         `;
         header.appendChild(actions);
 
-        // Eventos dos botões de janela
+        // Mover para coluna da esquerda
+        actions.querySelector(".win-move-left").addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.movePanelColumn(panel, -1);
+        });
+
+        // Mover para coluna da direita
+        actions.querySelector(".win-move-right").addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.movePanelColumn(panel, 1);
+        });
+
+        // Minimizar
         actions.querySelector(".win-min").addEventListener("click", (e) => {
+          e.preventDefault();
           e.stopPropagation();
           panel.classList.toggle("minimized");
           this.config[widgetId] = this.config[widgetId] || {};
@@ -73,15 +89,9 @@ export class HudGridManager {
           this.saveConfig();
         });
 
-        actions.querySelector(".win-expand").addEventListener("click", (e) => {
-          e.stopPropagation();
-          panel.classList.toggle("expanded-full");
-          this.config[widgetId] = this.config[widgetId] || {};
-          this.config[widgetId].expanded = panel.classList.contains("expanded-full");
-          this.saveConfig();
-        });
-
+        // Ocultar
         actions.querySelector(".win-close").addEventListener("click", (e) => {
+          e.preventDefault();
           e.stopPropagation();
           panel.style.display = "none";
           this.config[widgetId] = this.config[widgetId] || {};
@@ -91,19 +101,46 @@ export class HudGridManager {
         });
       }
 
-      // Torna o header arrastável
+      // Evita conflito entre clique nos botões e o dragstart do header
+      header.querySelectorAll("button, input, a").forEach((btn) => {
+        btn.addEventListener("mousedown", () => header.setAttribute("draggable", "false"));
+        btn.addEventListener("mouseup", () => header.setAttribute("draggable", "true"));
+        btn.addEventListener("mouseleave", () => header.setAttribute("draggable", "true"));
+      });
+
+      // Ativa arrasto nativo no header
       header.setAttribute("draggable", "true");
     });
   }
 
+  movePanelColumn(panel, direction) {
+    const colList = Array.from(document.querySelectorAll(".grid-column"));
+    const currentCol = panel.closest(".grid-column");
+    if (!currentCol) return;
+
+    const currentIndex = colList.indexOf(currentCol);
+    const targetIndex = currentIndex + direction;
+
+    if (targetIndex >= 0 && targetIndex < colList.length) {
+      const targetCol = colList[targetIndex];
+      targetCol.insertBefore(panel, targetCol.firstChild);
+      this.recordOrder();
+    }
+  }
+
   initDragAndDrop() {
     const panels = document.querySelectorAll(".hud-panel");
+    const columns = document.querySelectorAll(".grid-column");
 
     panels.forEach((panel) => {
       const header = panel.querySelector("header");
       if (!header) return;
 
       header.addEventListener("dragstart", (e) => {
+        if (e.target.closest("button") || e.target.closest("input") || e.target.closest(".holo-mode-btn")) {
+          e.preventDefault();
+          return;
+        }
         this.draggedPanel = panel;
         panel.classList.add("dragging");
         e.dataTransfer.effectAllowed = "move";
@@ -116,6 +153,7 @@ export class HudGridManager {
           this.draggedPanel = null;
         }
         document.querySelectorAll(".hud-panel").forEach((p) => p.classList.remove("drag-over"));
+        document.querySelectorAll(".grid-column").forEach((c) => c.classList.remove("column-drop-target"));
         this.recordOrder();
       });
 
@@ -137,7 +175,6 @@ export class HudGridManager {
 
         if (!this.draggedPanel || this.draggedPanel === panel) return;
 
-        // Inserção relativa no DOM
         const targetParent = panel.parentElement;
         const rect = panel.getBoundingClientRect();
         const dropMiddleY = rect.top + rect.height / 2;
@@ -152,12 +189,16 @@ export class HudGridManager {
       });
     });
 
-    // Permite soltar em colunas vazias
-    this.columns.forEach((col) => {
+    columns.forEach((col) => {
       col.addEventListener("dragover", (e) => {
         e.preventDefault();
+        col.classList.add("column-drop-target");
+      });
+      col.addEventListener("dragleave", () => {
+        col.classList.remove("column-drop-target");
       });
       col.addEventListener("drop", (e) => {
+        col.classList.remove("column-drop-target");
         if (this.draggedPanel && !col.contains(this.draggedPanel)) {
           col.appendChild(this.draggedPanel);
           this.recordOrder();
@@ -168,7 +209,8 @@ export class HudGridManager {
 
   recordOrder() {
     const orderMap = {};
-    this.columns.forEach((col, colIdx) => {
+    const cols = document.querySelectorAll(".grid-column");
+    cols.forEach((col, colIdx) => {
       const colPanels = col.querySelectorAll(".hud-panel");
       colPanels.forEach((p, pIdx) => {
         const id = p.dataset.widgetId;
@@ -183,22 +225,24 @@ export class HudGridManager {
   }
 
   applyConfig() {
+    const panels = document.querySelectorAll(".hud-panel");
+    const cols = document.querySelectorAll(".grid-column");
+
     // 1. Aplica minimizados e ocultos
-    document.querySelectorAll(".hud-panel").forEach((panel) => {
+    panels.forEach((panel) => {
       const id = panel.dataset.widgetId;
       const c = this.config[id];
       if (c) {
         if (c.hidden) panel.style.display = "none";
         if (c.minimized) panel.classList.add("minimized");
-        if (c.expanded) panel.classList.add("expanded-full");
       }
     });
 
-    // 2. Aplica reordenação se existir
+    // 2. Aplica reordenação se salva
     const order = this.config.layoutOrder;
-    if (order) {
+    if (order && cols.length > 0) {
       const items = [];
-      document.querySelectorAll(".hud-panel").forEach((p) => {
+      panels.forEach((p) => {
         const o = order[p.dataset.widgetId];
         if (o) {
           items.push({ el: p, col: o.col, pos: o.pos });
@@ -207,7 +251,7 @@ export class HudGridManager {
 
       items.sort((a, b) => a.pos - b.pos);
       items.forEach((item) => {
-        const colEl = this.columns[item.col];
+        const colEl = cols[item.col];
         if (colEl) {
           colEl.appendChild(item.el);
         }
@@ -220,11 +264,18 @@ export class HudGridManager {
     const drawer = document.getElementById("grid-customizer-drawer");
     if (!triggerBtn || !drawer) return;
 
-    triggerBtn.addEventListener("click", () => {
+    triggerBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       drawer.classList.toggle("open");
     });
 
-    // Reset button
+    document.addEventListener("click", (e) => {
+      if (!drawer.contains(e.target) && e.target !== triggerBtn) {
+        drawer.classList.remove("open");
+      }
+    });
+
+    // Reset layout
     const resetBtn = document.getElementById("btn-reset-grid-layout");
     if (resetBtn) {
       resetBtn.addEventListener("click", () => {

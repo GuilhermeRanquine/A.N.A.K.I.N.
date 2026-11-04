@@ -116,6 +116,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    """Garante que assets estáticos e o console HUD não sejam retidos em cache stale do navegador."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith((".html", ".js", ".css", ".json")):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 data_service = AnakinDataService()
 
 
@@ -124,9 +137,16 @@ data_service = AnakinDataService()
 # -------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 async def get_index() -> FileResponse:
-    """Serve a interface principal do HUD."""
+    """Serve a interface principal do HUD com cabeçalhos anti-cache estrito."""
     index_path = STATIC_DIR / "index.html"
-    return FileResponse(index_path)
+    return FileResponse(
+        index_path,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 # Mapeamento de pastas estáticas individuais para compatibilidade com caminhos relativos
