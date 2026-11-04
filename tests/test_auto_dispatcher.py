@@ -35,6 +35,10 @@ from anakin.storage.local_cache import LocalCache
 
 
 class TestAutoDispatcher(unittest.TestCase):
+    def setUp(self) -> None:
+        """Garante que todos os operadores estejam online no início de cada teste."""
+        AutoDispatcher().definir_status_todos(True)
+
     def test_pool_elegivel_contem_apenas_seis_operadores(self) -> None:
         """Valida se o pool é formado estritamente pelos 6 operadores autorizados."""
         self.assertEqual(len(OPERADORES_ELEGIVEIS), 6)

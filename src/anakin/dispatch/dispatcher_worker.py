@@ -264,13 +264,15 @@ class DispatcherWorker:
                             },
                         )
                     else:
-                        msg_falha = f"{tag_modo} Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}."
+                        erro_detalhe = getattr(self.creator_client, "ultimo_erro", "")
+                        motivo_str = f" Motivo: {erro_detalhe}" if erro_detalhe else ""
+                        msg_falha = f"{tag_modo} Falha ao atribuir Chamado #{cod} para {op_escolhido.nome}.{motivo_str}"
                         console.print(f"[bold red]✗ {msg_falha}[/bold red]")
                         registrar_evento(
                             origem="DISPATCHER",
                             nivel="ERROR",
                             mensagem=msg_falha,
-                            detalhes={"codigo": cod, "operador": op_escolhido.nome},
+                            detalhes={"codigo": cod, "operador": op_escolhido.nome, "erro": erro_detalhe},
                         )
 
                 except Exception as e:

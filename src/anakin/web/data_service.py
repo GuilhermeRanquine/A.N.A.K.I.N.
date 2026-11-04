@@ -82,9 +82,9 @@ class AnakinDataService:
         for tentativa in range(5):
             try:
                 return duckdb.connect(str(self.db_path), read_only=True)
-            except duckdb.ConnectionException as e:
-                if tentativa < 4 and "different configuration" in str(e):
-                    time.sleep(0.03)
+            except Exception as e:
+                if tentativa < 4 and any(k in str(e).lower() for k in ["different configuration", "sendo usado", "cannot open file"]):
+                    time.sleep(0.05)
                     continue
                 raise
 

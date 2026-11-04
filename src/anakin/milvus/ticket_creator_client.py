@@ -210,19 +210,28 @@ def resolver_target_id_chamado(
     """
     if not ticket_ref:
         return ""
-    ref_str = str(ticket_ref).strip()
+    ref_str = str(ticket_ref).lstrip("#").strip()
+    # Fast-path: se já for um identificador numérico de 7+ dígitos (ex: 39397040), já é o ID interno do Milvus
+    if ref_str.isdigit() and len(ref_str) >= 7:
+        return ref_str
+
     db_file = Path(duckdb_path)
     if db_file.exists():
-        try:
-            with duckdb.connect(str(db_file), read_only=True) as conn:
-                row = conn.execute(
-                    "SELECT id FROM chamados WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?",
-                    (ref_str, ref_str),
-                ).fetchone()
-                if row and row[0]:
-                    return str(row[0]).strip()
-        except Exception as e:
-            console.print(f"[dim yellow]Aviso ao resolver ID do chamado no DuckDB: {e}[/dim yellow]")
+        for tentativa in range(4):
+            try:
+                with duckdb.connect(str(db_file), read_only=True) as conn:
+                    row = conn.execute(
+                        "SELECT id FROM chamados WHERE CAST(codigo AS VARCHAR) = ? OR CAST(id AS VARCHAR) = ?",
+                        (ref_str, ref_str),
+                    ).fetchone()
+                    if row and row[0]:
+                        return str(row[0]).strip()
+                    break
+            except Exception as e:
+                if tentativa < 3:
+                    time.sleep(0.04)
+                    continue
+                console.print(f"[dim yellow]Aviso ao resolver ID do chamado no DuckDB: {e}[/dim yellow]")
     return ref_str
 
 
@@ -257,6 +266,7 @@ class MilvusTicketCreatorClient:
         self._limiter = AsyncLimiter(1, self.settings.milvus_rate_limit_seconds)
         self._last_request_time: float = 0.0
         self._client: httpx.AsyncClient | None = None
+        self.ultimo_erro: str = ""
 
     def _get_headers(self) -> dict[str, str]:
         """Retorna cabeçalhos oficiais com token puro (sem prefixo Bearer)."""
@@ -593,6 +603,31 @@ class MilvusTicketCreatorClient:
             )
             return False
 
+    async def _executar_requisicao_atualizar(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+        target_id: str,
+    ) -> tuple[bool, str]:
+        """Executa POST /chamado/atualizar e avalia resposta HTTP e lógica de retorno."""
+        try:
+            resp = await client.post("/chamado/atualizar", json=payload)
+        except Exception as e:
+            return False, f"Exceção de rede: {e}"
+
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code}: {resp.text}"
+
+        try:
+            data = resp.json()
+            if isinstance(data, dict) and data.get("status") is False:
+                msg = data.get("mensagem") or data.get("retorno") or str(data)
+                return False, f"Lógico: {msg}"
+        except Exception:
+            pass
+
+        return True, ""
+
     async def atualizar_triagem_chamado(
         self,
         chamado_codigo_ou_id: str | int,
@@ -608,23 +643,30 @@ class MilvusTicketCreatorClient:
     ) -> bool:
         """Atualiza a triagem completa e atribuição de um chamado no Milvus via POST /chamado/atualizar.
 
-        Garante:
-        1. Resolução confiável do id interno no DuckDB (chamado_ids).
-        2. Payload estrito e padronizado (sem chaves duplicadas ou inválidas).
-        3. Diagnóstico transparente de erros da API ([ERRO MILVUS {status_code}]: {texto}).
-        4. Tratamento resiliente da prioridade com retry numérico instantâneo se formato textual for rejeitado.
-        5. Mapeamento estrito da mesa e setor cadastrados no Milvus com retry automático.
+        Implementa pipeline resiliente de 3 Tiers com fallback automático:
+        - Tier 1: Enriquecimento completo (prioridade textual, categorias, tipos, contatos, mesa/setor mapeados).
+        - Tier 2: Sanitização de dados essenciais (remove campos enriquecidos rejeitados, prioridade numérica, mesa simplificada).
+        - Tier 3: Atribuição mínima à prova de falhas (mesa institucional 'Upgrade TI', prioridade numérica).
+        Garante registro do último erro em `self.ultimo_erro` para telemetria transparente.
         """
         self._validar_rota("POST", "/chamado/atualizar")
-        await self._aguardar_rate_limit()
+        self.ultimo_erro = ""
 
         # 1. Resolução Confiável do Identificador do Chamado (chamado_ids)
         target_id = resolver_target_id_chamado(chamado_codigo_ou_id)
         if not target_id:
-            console.print(
-                f"[bold red][ERRO MILVUS]: Identificador de chamado vazio ou inválido ({chamado_codigo_ou_id})[/bold red]"
-            )
+            self.ultimo_erro = f"Identificador de chamado vazio ou inválido ({chamado_codigo_ou_id})"
+            console.print(f"[bold red][ERRO MILVUS]: {self.ultimo_erro}[/bold red]")
             return False
+
+        # Se target_id for apenas o código curto (menos de 7 dígitos), tenta recuperar o ID interno de 8 dígitos
+        if target_id.isdigit() and len(target_id) < 7:
+            try:
+                id_recuperado = await self.buscar_id_interno_chamado(target_id)
+                if id_recuperado:
+                    target_id = str(id_recuperado).strip()
+            except Exception as e:
+                console.print(f"[dim yellow]Aviso ao buscar ID interno via API: {e}[/dim yellow]")
 
         # 2. Resolução do nome, mesa e setor normalizados para o Milvus
         nome_final = nome_operador
@@ -636,12 +678,15 @@ class MilvusTicketCreatorClient:
         mesa_final = resolver_mesa_milvus(email_tecnico or nome_final) or nome_final
         setor_final = resolver_setor_milvus(email_tecnico or nome_final) or nome_final
 
-        # 3. Tratamento Resiliente da Prioridade (Canônica e Numérica)
         prioridade_texto = normalizar_prioridade_texto(prioridade)
         prio_num = obter_prioridade_numerica(prioridade)
 
-        # 4. Payload Estrito e Padronizado (Sem Chaves Duplicadas ou Inválidas)
-        payload: dict[str, Any] = {
+        client = await self._obter_client()
+
+        # =========================================================================
+        # TIER 1: Tentativa Completa com Enriquecimento IA
+        # =========================================================================
+        payload_t1: dict[str, Any] = {
             "chamado_ids": str(target_id),
             "chamado_mesa": str(mesa_final),
             "chamado_setor": str(setor_final),
@@ -650,109 +695,84 @@ class MilvusTicketCreatorClient:
         }
 
         if categoria_primaria:
-            payload["chamado_categoria_primaria"] = str(categoria_primaria).strip()
+            payload_t1["chamado_categoria_primaria"] = str(categoria_primaria).strip()
         if categoria_secundaria:
-            payload["chamado_categoria_secundaria"] = str(categoria_secundaria).strip()
+            payload_t1["chamado_categoria_secundaria"] = str(categoria_secundaria).strip()
         if tipo_ticket:
-            payload["chamado_tipo_chamado"] = str(tipo_ticket).strip()
+            payload_t1["chamado_tipo_chamado"] = str(tipo_ticket).strip()
         if contato_nome:
-            payload["chamado_contato"] = str(contato_nome).strip()
+            payload_t1["chamado_contato"] = str(contato_nome).strip()
         if contato_email:
-            payload["chamado_email"] = str(contato_email).strip()
+            payload_t1["chamado_email"] = str(contato_email).strip()
         if contato_telefone:
-            payload["chamado_telefone"] = str(contato_telefone).strip()
+            payload_t1["chamado_telefone"] = str(contato_telefone).strip()
 
-        client = await self._obter_client()
-
-        # 5. Tentativa Inicial
-        try:
-            resp = await client.post("/chamado/atualizar", json=payload)
-        except Exception as e:
+        await self._aguardar_rate_limit()
+        sucesso_t1, erro_t1 = await self._executar_requisicao_atualizar(client, payload_t1, target_id)
+        if sucesso_t1:
             console.print(
-                f"[bold red][ERRO MILVUS Conexão]:[/bold red] Falha na requisição para o chamado #{target_id}: {e}"
+                f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus (Tier 1 Completo).[/bold green]"
             )
-            return False
+            return True
 
-        houve_erro = False
-        erro_prioridade = False
-        erro_mesa = False
-
-        if resp.status_code != 200:
-            houve_erro = True
-            console.print(f"[bold red][ERRO MILVUS {resp.status_code}]:[/bold red] {escape(resp.text)}")
-            texto_lower = resp.text.lower()
-            if any(k in texto_lower for k in ["prioridade", "priority", "chamado_prioridade"]):
-                erro_prioridade = True
-            if any(k in texto_lower for k in ["chamado_mesa", "mesa_trabalho", "mesa", "setor", "chamado_setor"]):
-                erro_mesa = True
-        else:
-            try:
-                data = resp.json()
-                if isinstance(data, dict) and data.get("status") is False:
-                    houve_erro = True
-                    msg = data.get("mensagem") or data.get("retorno") or str(data)
-                    console.print(f"[bold red][ERRO MILVUS 200 (Lógico)]:[/bold red] {escape(str(msg))}")
-                    texto_lower = str(msg).lower()
-                    if any(k in texto_lower for k in ["prioridade", "priority", "chamado_prioridade"]):
-                        erro_prioridade = True
-                    if any(k in texto_lower for k in ["chamado_mesa", "mesa_trabalho", "mesa", "setor", "chamado_setor"]):
-                        erro_mesa = True
-            except Exception:
-                pass
-
-        # 6. Retry Automático Instantâneo para Prioridade e/ou Mesa
-        if houve_erro and (erro_prioridade or erro_mesa):
-            tentar_retry = False
-
-            if erro_mesa:
-                mesa_alt = mesa_final.split()[0] if " " in mesa_final else "Upgrade TI"
-                console.print(
-                    f"[bold yellow][Retry Mesa Milvus][/bold yellow] Milvus rejeitou mesa '{mesa_final}'. "
-                    f"Tentando retry automático com '{mesa_alt}'..."
-                )
-                payload["chamado_mesa"] = mesa_alt
-                tentar_retry = True
-
-            if erro_prioridade and prio_num != prioridade_texto:
-                console.print(
-                    f"[bold yellow][Retry Prioridade Numérica][/bold yellow] Milvus rejeitou prioridade textual "
-                    f"'{prioridade_texto}'. Executando retry automático instantâneo com ID numérico '{prio_num}'..."
-                )
-                payload["chamado_prioridade"] = str(prio_num)
-                tentar_retry = True
-
-            if tentar_retry:
-                try:
-                    resp_retry = await client.post("/chamado/atualizar", json=payload)
-                    if resp_retry.status_code == 200:
-                        try:
-                            data_retry = resp_retry.json()
-                            if not (isinstance(data_retry, dict) and data_retry.get("status") is False):
-                                console.print(
-                                    f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus (via retry resiliente).[/bold green]"
-                                )
-                                return True
-                            else:
-                                msg_retry = data_retry.get("mensagem") or data_retry.get("retorno") or str(data_retry)
-                                console.print(f"[bold red][ERRO MILVUS 200 (Lógico no Retry)]:[/bold red] {escape(str(msg_retry))}")
-                        except Exception:
-                            return True
-                    else:
-                        console.print(
-                            f"[bold red][ERRO MILVUS {resp_retry.status_code} no Retry]:[/bold red] {escape(resp_retry.text)}"
-                        )
-                except Exception as e:
-                    console.print(
-                        f"[bold red][ERRO MILVUS Conexão (Retry)]:[/bold red] Falha no retry para o chamado #{target_id}: {e}"
-                    )
-
-        if houve_erro:
-            return False
-
+        self.ultimo_erro = f"[Tier 1]: {erro_t1}"
         console.print(
-            f"[bold green]✓ Triagem do chamado #{target_id} atualizada com sucesso no Milvus.[/bold green]"
+            f"[bold yellow][Fallback Tier 2][/bold yellow] Tier 1 rejeitado ({erro_t1}). "
+            f"Ativando fallback de atribuição essencial com sanitização e prioridade numérica..."
         )
-        return True
+
+        # =========================================================================
+        # TIER 2: Atribuição Essencial Sanitizada (Sem campos extras rejeitados)
+        # =========================================================================
+        mesa_t2 = mesa_final.split()[0] if (" " in mesa_final and any(k in erro_t1.lower() for k in ["mesa", "setor"])) else mesa_final
+        setor_t2 = setor_final.split()[0] if (" " in setor_final and any(k in erro_t1.lower() for k in ["mesa", "setor"])) else setor_final
+
+        payload_t2: dict[str, Any] = {
+            "chamado_ids": str(target_id),
+            "chamado_mesa": str(mesa_t2),
+            "chamado_setor": str(setor_t2),
+            "chamado_tecnico": str(email_tecnico or "").strip(),
+            "chamado_prioridade": str(prio_num),
+        }
+
+        sucesso_t2, erro_t2 = await self._executar_requisicao_atualizar(client, payload_t2, target_id)
+        if sucesso_t2:
+            console.print(
+                f"[bold green]✓ Chamado #{target_id} atribuído com sucesso no Milvus via Tier 2 (Essencial Sanitizado).[/bold green]"
+            )
+            self.ultimo_erro = ""
+            return True
+
+        self.ultimo_erro = f"[Tier 2]: {erro_t2}"
+        console.print(
+            f"[bold yellow][Fallback Tier 3][/bold yellow] Tier 2 rejeitado ({erro_t2}). "
+            f"Ativando fallback institucional de mesa padrão 'Upgrade TI'..."
+        )
+
+        # =========================================================================
+        # TIER 3: Atribuição Mínima Institucional de Emergência
+        # =========================================================================
+        payload_t3: dict[str, Any] = {
+            "chamado_ids": str(target_id),
+            "chamado_mesa": "Upgrade TI",
+            "chamado_setor": "Upgrade TI",
+            "chamado_tecnico": str(email_tecnico or "").strip(),
+            "chamado_prioridade": str(prio_num),
+        }
+
+        sucesso_t3, erro_t3 = await self._executar_requisicao_atualizar(client, payload_t3, target_id)
+        if sucesso_t3:
+            console.print(
+                f"[bold green]✓ Chamado #{target_id} atribuído com sucesso no Milvus via Tier 3 (Institucional 'Upgrade TI').[/bold green]"
+            )
+            self.ultimo_erro = ""
+            return True
+
+        self.ultimo_erro = f"[Tier 3 Rejeitado]: {erro_t3}"
+        console.print(
+            f"[bold red][FALHA TOTAL DE DESPACHO MILVUS]: Todos os 3 Tiers falharam para o chamado #{target_id}: {erro_t3}[/bold red]"
+        )
+        return False
 
     async def close(self) -> None:
         """Encerra a conexão HTTP."""

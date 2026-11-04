@@ -13,6 +13,9 @@ import duckdb
 
 from anakin.config.settings import Settings, get_settings
 from anakin.domain.ticket_models import TicketSummary
+from rich.console import Console
+
+console = Console()
 
 
 def normalizar_para_busca(texto: str) -> str:
@@ -91,6 +94,13 @@ class LocalCache:
             con_ctx = self._obter_conexao()
         except Exception as e:
             if "sendo usado por outro processo" in str(e) or "cannot open file" in str(e).lower():
+                # Se o banco já estiver em uso pelo processo principal, tenta conexão somente leitura
+                try:
+                    with self._obter_conexao(read_only=True) as _:
+                        self.read_only = True
+                        return
+                except Exception:
+                    pass
                 console.print(
                     "\n[bold red]=================================================================[/bold red]\n"
                     "[bold red][FALHA DE INICIALIZAÇÃO DUCKDB]: O banco de dados já está em uso![/bold red]\n"
