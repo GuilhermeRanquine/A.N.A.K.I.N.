@@ -5,8 +5,8 @@
 
 import { refreshPalette, pal } from "./core/palette.js";
 import { startSparks } from "./core/sparks.js";
-import { Hologram3DViewer } from "./hologram-3d.js?v=3.2";
-import { HudGridManager } from "./grid-manager.js?v=3.2";
+import { Hologram3DViewer } from "./hologram-3d.js?v=3.3";
+import { HudGridManager } from "./grid-manager.js?v=3.3";
 
 // Estado global da aplicação
 const state = {
@@ -208,16 +208,27 @@ async function carregarPool() {
 function renderPool(data) {
   if (!data || !data.operadores) return;
 
+  const totalOps = data.total_operadores || data.operadores.length;
+  const totalOnline = data.total_online !== undefined
+    ? data.total_online
+    : data.operadores.filter((o) => o.online !== false).length;
+
+  const onlineBadge = document.getElementById("pool-online-badge");
+  if (onlineBadge) {
+    onlineBadge.textContent = `${totalOnline}/${totalOps} ONLINE`;
+    onlineBadge.className = `holo-badge ${totalOnline === 0 ? "all-offline" : totalOnline < totalOps ? "has-offline" : ""}`;
+  }
+
   const poolSummary = document.getElementById("pool-next-summary");
   if (poolSummary) {
-    poolSummary.textContent = `${data.operadores.length} OPERADORES ELEGÍVEIS`;
+    poolSummary.textContent = `${totalOnline}/${totalOps} OPERADORES ONLINE`;
   }
 
   const nextN1El = document.getElementById("next-n1-name");
-  if (nextN1El) nextN1El.textContent = data.proximo_n1 || "NENHUM";
+  if (nextN1El) nextN1El.textContent = data.proximo_n1 || "NENHUM ONLINE";
 
   const nextN2El = document.getElementById("next-n2-name");
-  if (nextN2El) nextN2El.textContent = data.proximo_n2 || "NENHUM";
+  if (nextN2El) nextN2El.textContent = data.proximo_n2 || "NENHUM ONLINE";
 
   const container = document.getElementById("pool-list");
   if (!container) return;
@@ -228,34 +239,106 @@ function renderPool(data) {
   const maxScore = Math.max(...data.operadores.map((o) => o.score_total), 1);
 
   data.operadores.forEach((op) => {
-    const isNext = op.eh_proximo_n1 || op.eh_proximo_n2;
+    const isOnline = op.online !== false;
+    const isNext = isOnline && (op.eh_proximo_n1 || op.eh_proximo_n2);
     const pct = Math.min(100, Math.round((op.score_total / (maxScore * 1.2)) * 100));
 
     const card = document.createElement("div");
-    card.className = `pool-card ${isNext ? "proximo" : ""}`;
+    card.className = `pool-card ${isNext ? "proximo" : ""} ${!isOnline ? "offline" : ""}`;
 
     const tagBadge = isNext
       ? `<span class="hud-badge solid" style="background:var(--ac);color:var(--bg)">PRÓXIMO</span>`
+      : !isOnline
+      ? `<span class="hud-badge" style="color:var(--dim);border-color:var(--line);background:transparent;">PAUSADO</span>`
       : `<span class="hud-badge">${op.nivel}</span>`;
+
+    const onlineToggle = `
+      <div class="operator-online-toggle">
+        <button class="btn-presence-toggle ${isOnline ? 'on' : 'off'}" data-email="${op.email}" data-name="${op.nome}" data-current="${isOnline ? 'true' : 'false'}" title="${isOnline ? 'Clique para DESLIGAR (pausar do recebimento de chamados)' : 'Clique para LIGAR (tornar disponível para chamados)'}">
+          <span class="presence-indicator-dot ${isOnline ? 'dot-online' : 'dot-offline'}"></span>
+          <span class="presence-label">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+        </button>
+      </div>
+    `;
 
     card.innerHTML = `
       <div class="pool-card-header">
-        <b class="pool-card-name">${op.nome}</b>
         <div style="display:flex;align-items:center;gap:6px;">
+          <b class="pool-card-name" style="${!isOnline ? 'color:var(--dim);' : ''}">${op.nome}</b>
           ${tagBadge}
-          <span class="pool-card-score">SCORE: ${op.score_total}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="pool-card-score" style="${!isOnline ? 'opacity:0.4;' : ''}">SCORE: ${op.score_total}</span>
+          ${onlineToggle}
         </div>
       </div>
       <div class="hud-progress thin" style="margin:2px 0;">
-        <i style="width:${pct}%;background:${isNext ? "var(--ac)" : "var(--fg)"}"></i>
+        <i style="width:${pct}%;background:${!isOnline ? "var(--dim)" : isNext ? "var(--ac)" : "var(--fg)"}"></i>
       </div>
       <div class="pool-card-sub">
-        <span>${op.detalhe}</span>
-        <span>${op.total_abertos} abertos</span>
+        <span style="${!isOnline ? 'color:var(--dim);' : ''}">${op.detalhe}</span>
+        <span style="${!isOnline ? 'color:var(--dim);' : ''}">${op.total_abertos} abertos</span>
       </div>
     `;
     container.appendChild(card);
   });
+
+  // Vincula evento de clique no botão de ligar/desligar de cada operador
+  container.querySelectorAll(".btn-presence-toggle").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const email = btn.dataset.email;
+      const current = btn.dataset.current === "true";
+      const newStatus = !current;
+
+      // Atualização otimista imediata na UI
+      btn.classList.toggle("on", newStatus);
+      btn.classList.toggle("off", !newStatus);
+      btn.dataset.current = newStatus ? "true" : "false";
+      const lbl = btn.querySelector(".presence-label");
+      if (lbl) lbl.textContent = newStatus ? "ONLINE" : "OFFLINE";
+      const dot = btn.querySelector(".presence-indicator-dot");
+      if (dot) dot.className = `presence-indicator-dot ${newStatus ? 'dot-online' : 'dot-offline'}`;
+      const card = btn.closest(".pool-card");
+      if (card) card.classList.toggle("offline", !newStatus);
+
+      try {
+        const res = await fetch("/api/operadores/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, online: newStatus }),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.pool) renderPool(json.pool);
+        }
+      } catch (err) {
+        console.warn("Erro ao atualizar status do operador:", err);
+      }
+    });
+  });
+
+  // Vincula botão de ligar todos se presente
+  const btnToggleAll = document.getElementById("btn-toggle-all-online");
+  if (btnToggleAll && !btnToggleAll.dataset.bound) {
+    btnToggleAll.dataset.bound = "true";
+    btnToggleAll.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/operadores/status-all", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ online: true }),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.pool) renderPool(json.pool);
+        }
+      } catch (err) {
+        console.warn("Erro ao ligar todos operadores:", err);
+      }
+    });
+  }
 }
 
 async function carregarTickets() {

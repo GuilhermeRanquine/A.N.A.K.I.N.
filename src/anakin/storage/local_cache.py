@@ -132,8 +132,10 @@ class LocalCache:
                 -- Tabela oficial única e higienizada de operadores da Upgrade TI
                 CREATE TABLE IF NOT EXISTS operadores_oficiais (
                     nome_exibicao VARCHAR PRIMARY KEY,
-                    email_tecnico VARCHAR
+                    email_tecnico VARCHAR,
+                    online BOOLEAN DEFAULT TRUE
                 );
+                ALTER TABLE operadores_oficiais ADD COLUMN IF NOT EXISTS online BOOLEAN DEFAULT TRUE;
 
                 -- Remove tabela legada com apelidos duplicados/colados
                 DROP TABLE IF EXISTS tecnicos_alias;
@@ -778,4 +780,75 @@ class LocalCache:
                     pass
 
             return d
+
+    def obter_status_operadores(self) -> dict[str, bool]:
+        """Retorna mapeamento de email (em minúsculas) para status online/offline."""
+        status_map: dict[str, bool] = {}
+        # 1. Tenta carregar do arquivo de persistência rápida JSON (zero-latency, livre de locks)
+        json_path = self.db_path.parent / "operadores_status.json"
+        if json_path.exists():
+            try:
+                import json
+                with open(json_path, "r", encoding="utf-8") as f:
+                    dados = json.load(f)
+                    if isinstance(dados, dict):
+                        return {str(k).strip().lower(): bool(v) for k, v in dados.items()}
+            except Exception:
+                pass
+
+        # 2. Fallback para o DuckDB caso exista
+        try:
+            with self._obter_conexao(read_only=True) as con:
+                rows = con.execute("SELECT email_tecnico, online FROM operadores_oficiais").fetchall()
+                for em, on in rows:
+                    if em:
+                        status_map[str(em).strip().lower()] = bool(on if on is not None else True)
+        except Exception:
+            pass
+
+        return status_map
+
+    def definir_status_operador(self, email_ou_nome: str, online: bool) -> bool:
+        """Atualiza a presença (online/offline) de um técnico no JSON rápido e no DuckDB."""
+        if not email_ou_nome:
+            return False
+
+        alvo = email_ou_nome.strip().lower()
+        status_map = self.obter_status_operadores()
+
+        # Encontra o email correspondente
+        email_alvo = alvo if "@" in alvo else None
+        if not email_alvo:
+            for nome, default_email in OPERADORES_OFICIAIS_PADRAO:
+                if alvo in nome.lower() or nome.lower() in alvo:
+                    email_alvo = default_email.lower()
+                    break
+
+        if not email_alvo:
+            email_alvo = alvo
+
+        status_map[email_alvo] = bool(online)
+
+        # Salva atomicamente no arquivo JSON de persistência rápida
+        json_path = self.db_path.parent / "operadores_status.json"
+        try:
+            import json
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(status_map, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            console.print(f"[dim yellow]Aviso ao salvar operadores_status.json: {e}[/dim yellow]")
+
+        # Atualiza no DuckDB se a conexão não for read-only
+        if not self.read_only:
+            try:
+                with self._obter_conexao(read_only=False) as con:
+                    con.execute(
+                        "UPDATE operadores_oficiais SET online = ? WHERE LOWER(email_tecnico) = ? OR LOWER(nome_exibicao) = ?",
+                        [bool(online), email_alvo, alvo],
+                    )
+            except Exception:
+                pass
+
+        return True
 

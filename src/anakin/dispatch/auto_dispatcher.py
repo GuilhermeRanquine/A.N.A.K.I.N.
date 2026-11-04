@@ -30,6 +30,10 @@ class SecurityDispatchError(Exception):
     """Exceção levantada em caso de violação das regras de segurança de despacho."""
 
 
+class NoAvailableOperatorsError(Exception):
+    """Exceção levantada quando não há nenhum operador online ou elegível para atendimento."""
+
+
 @dataclass(frozen=True)
 class OperadorElegivel:
     """Representa um operador oficialmente autorizado a receber chamados automáticos."""
@@ -376,10 +380,43 @@ class AutoDispatcher:
         self._round_robin_counter += 1
         return escolhido
 
+    def obter_status_operadores(self) -> dict[str, bool]:
+        """Retorna o status de presença (online/offline) dos operadores."""
+        status_db = self.cache.obter_status_operadores() if hasattr(self.cache, "obter_status_operadores") else {}
+        res = {}
+        for op in OPERADORES_ELEGIVEIS:
+            res[op.email.lower()] = status_db.get(op.email.lower(), True)
+        return res
+
+    def is_operador_online(self, email: str) -> bool:
+        """Verifica se um operador está marcado como ONLINE."""
+        if not email:
+            return False
+        st = self.obter_status_operadores()
+        return st.get(email.strip().lower(), True)
+
+    def definir_status_operador(self, email_ou_nome: str, online: bool) -> bool:
+        """Atualiza a presença (online/offline) de um técnico elegível."""
+        if hasattr(self.cache, "definir_status_operador"):
+            return self.cache.definir_status_operador(email_ou_nome, online)
+        return False
+
+    def definir_status_todos(self, online: bool) -> dict[str, bool]:
+        """Define o status online de todos os 6 operadores elegíveis."""
+        for op in OPERADORES_ELEGIVEIS:
+            self.definir_status_operador(op.email, online)
+        return self.obter_status_operadores()
+
     def selecionar_operador_menor_score(self) -> tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador]]:
-        """Seleciona o operador elegível do pool global com o MENOR Score de Carga."""
+        """Seleciona o operador elegível ONLINE do pool global com o MENOR Score de Carga."""
         scores_map = self.calcular_scores_pool()
-        todos_scores = list(scores_map.values())
+        # Filtra apenas operadores que estão marcados como ONLINE
+        todos_scores = [sc for sc in scores_map.values() if self.is_operador_online(sc.operador.email)]
+        if not todos_scores:
+            raise NoAvailableOperatorsError(
+                "Nenhum operador elegível está ONLINE para atendimento. Despacho retido com segurança."
+            )
+
         todos_scores.sort(key=lambda sc: (sc.score_total, sc.total_chamados_abertos))
 
         menor_score = min(sc.score_total for sc in todos_scores)
@@ -394,23 +431,19 @@ class AutoDispatcher:
         self,
         prioridade: str,
     ) -> tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador], str]:
-        """Roteamento por Nível de Prioridade (Tiered Dispatching).
+        """Roteamento por Nível de Prioridade (Tiered Dispatching) com filtro estrito de operadores ONLINE.
 
         - Prioridade 'Crítico' ou 'Alto': Pool Sênior / N2
             (Gabriel Oliveira, Gabryel Santos, Guilherme Maganha)
         - Prioridade 'Médio' ou 'Baixo': Pool Pleno / N1
             (Carlos Bucazio, Kaio Silva, Gabriel Sena)
 
-        Caso todos os técnicos do pool alvo estejam sob sobrecarga severa (score >= 35)
-        e o outro pool possua operador com menor carga e folga >= 10 pts,
-        ativa o Fallback Balanceado entre os pools.
-
-        Returns:
-            tuple[OperadorElegivel, ScoreOperador, list[ScoreOperador], str]:
-                - Operador selecionado
-                - Objeto ScoreOperador
-                - Ranking de scores dos operadores do pool consultado
-                - Tag informativa do pool utilizado (ex: 'Pool Sênior / N2')
+        Presença & Fallbacks:
+        1. Considera APENAS operadores marcados como ONLINE.
+        2. Se todos os operadores do pool alvo estiverem offline, executa fallback automático por presença
+           para operadores online do outro pool.
+        3. Se nenhum operador de nenhum nível estiver online, levanta NoAvailableOperatorsError sem atribuir.
+        4. Avalia sobrecarga severa (score >= 35 com delta >= 10) para balanceamento entre pools.
         """
         nfkd = unicodedata.normalize("NFKD", str(prioridade or "médio"))
         p_clean = "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
@@ -418,29 +451,56 @@ class AutoDispatcher:
 
         scores_map = self.calcular_scores_pool()
 
-        # Separação dos scores por pool
-        scores_senior = [sc for op, sc in scores_map.items() if op.email.lower() in POOL_SENIOR_N2_EMAILS]
-        scores_pleno = [sc for op, sc in scores_map.items() if op.email.lower() in POOL_PLENO_N1_EMAILS]
+        # Separação dos scores por pool considerando exclusivamente operadores ONLINE
+        scores_senior = [
+            sc for op, sc in scores_map.items()
+            if op.email.lower() in POOL_SENIOR_N2_EMAILS and self.is_operador_online(op.email)
+        ]
+        scores_pleno = [
+            sc for op, sc in scores_map.items()
+            if op.email.lower() in POOL_PLENO_N1_EMAILS and self.is_operador_online(op.email)
+        ]
 
         scores_senior.sort(key=lambda sc: (sc.score_total, sc.total_chamados_abertos))
         scores_pleno.sort(key=lambda sc: (sc.score_total, sc.total_chamados_abertos))
 
+        # Se nenhum operador em nenhum nível estiver online
+        if not scores_senior and not scores_pleno:
+            raise NoAvailableOperatorsError(
+                "Nenhum operador elegível (Sênior ou Pleno) está ONLINE no momento. "
+                "O despacho foi retido com segurança até que um operador fique online."
+            )
+
         if eh_alta_ou_critica:
-            pool_alvo = scores_senior
-            pool_fallback = scores_pleno
-            nome_pool_alvo = "Pool Sênior / N2"
-            nome_pool_fallback = "Fallback Balanceado (Sênior -> Pleno)"
+            if scores_senior:
+                pool_alvo = scores_senior
+                pool_fallback = scores_pleno
+                nome_pool_alvo = "Pool Sênior / N2"
+                nome_pool_fallback = "Fallback Balanceado (Sênior -> Pleno)"
+            else:
+                # Todos os seniores offline -> Fallback automático por presença para Plenos online
+                pool_alvo = scores_pleno
+                pool_fallback = []
+                nome_pool_alvo = "Fallback por Presença (Sênior Offline -> Pleno Online)"
+                nome_pool_fallback = nome_pool_alvo
         else:
-            pool_alvo = scores_pleno
-            pool_fallback = scores_senior
-            nome_pool_alvo = "Pool Pleno / N1"
-            nome_pool_fallback = "Fallback Balanceado (Pleno -> Sênior)"
+            if scores_pleno:
+                pool_alvo = scores_pleno
+                pool_fallback = scores_senior
+                nome_pool_alvo = "Pool Pleno / N1"
+                nome_pool_fallback = "Fallback Balanceado (Pleno -> Sênior)"
+            else:
+                # Todos os plenos offline -> Fallback automático por presença para Seniores online
+                pool_alvo = scores_senior
+                pool_fallback = []
+                nome_pool_alvo = "Fallback por Presença (Pleno Offline -> Sênior Online)"
+                nome_pool_fallback = nome_pool_alvo
 
         min_score_alvo = pool_alvo[0].score_total if pool_alvo else 999
         min_score_fallback = pool_fallback[0].score_total if pool_fallback else 999
 
-        # Avaliação de sobrecarga severa para fallback balanceado
-        if min_score_alvo >= 35 and (min_score_alvo - min_score_fallback) >= 10:
+        # Avaliação de sobrecarga severa para fallback balanceado (somente se pool_fallback tiver técnicos online)
+        if pool_fallback and min_score_alvo >= 35 and (min_score_alvo - min_score_fallback) >= 10:
             candidatos_empatados = [sc for sc in pool_fallback if sc.score_total == min_score_fallback]
             escolhido_score = self._desempatar_candidatos(candidatos_empatados)
             tag_pool = nome_pool_fallback

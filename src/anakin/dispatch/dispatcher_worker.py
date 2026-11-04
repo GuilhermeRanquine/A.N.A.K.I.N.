@@ -225,7 +225,7 @@ class DispatcherWorker:
                     # Triagem IA
                     triagem = self.triage_ai.triar_chamado(chamado, catalogo=catalogo)
 
-                    # Roteamento por Nível de Prioridade (Tiered Dispatching)
+                    # Roteamento por Nível de Prioridade (Tiered Dispatching com Filtro Online)
                     op_escolhido, sc_escolhido, _, tag_pool = self.dispatcher.selecionar_operador_por_prioridade(
                         triagem.prioridade
                     )

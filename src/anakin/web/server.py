@@ -258,6 +258,82 @@ async def get_dispatcher_status() -> dict[str, Any]:
 
 
 # -------------------------------------------------------------
+# Endpoints REST de Gestão de Presença dos Técnicos (Online/Offline)
+# -------------------------------------------------------------
+@app.post("/api/operadores/status")
+async def toggle_operador_status(request: Request) -> dict[str, Any]:
+    """Altera o status de presença (ONLINE / OFFLINE) de um operador do pool."""
+    from anakin.dispatch.auto_dispatcher import AutoDispatcher
+
+    corpo = await request.json()
+    email = corpo.get("email", "")
+    nome = corpo.get("nome", "")
+    online = bool(corpo.get("online", True))
+
+    identificador = email or nome
+    if not identificador:
+        return {"status": "error", "mensagem": "E-mail ou nome do operador é obrigatório."}
+
+    # Atualiza no dispatcher local
+    dispatcher = AutoDispatcher(settings=get_settings(), read_only=False)
+    dispatcher.definir_status_operador(identificador, online)
+
+    # Se o worker estiver rodando no mesmo processo, sincroniza sua instância ativa
+    worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
+    if worker and hasattr(worker, "dispatcher"):
+        worker.dispatcher.definir_status_operador(identificador, online)
+
+    status_str = "ONLINE (Disponível)" if online else "OFFLINE (Pausado do Despacho)"
+    registrar_evento(
+        origem="OPERADOR",
+        nivel="INFO" if online else "WARNING",
+        mensagem=f"Operador '{identificador}' alterado para {status_str}.",
+        detalhes={"identificador": identificador, "online": online},
+    )
+
+    pool_atualizado = data_service.obter_pool_atendimento()
+    return {
+        "status": "ok",
+        "mensagem": f"Status de {identificador} atualizado para {status_str}.",
+        "online": online,
+        "pool": pool_atualizado,
+    }
+
+
+@app.post("/api/operadores/status-all")
+async def toggle_all_operadores_status(request: Request) -> dict[str, Any]:
+    """Altera o status de presença de TODOS os operadores elegíveis simultaneamente."""
+    from anakin.dispatch.auto_dispatcher import AutoDispatcher
+
+    corpo = await request.json()
+    online = bool(corpo.get("online", True))
+
+    dispatcher = AutoDispatcher(settings=get_settings(), read_only=False)
+    status_map = dispatcher.definir_status_todos(online)
+
+    worker: Optional[DispatcherWorker] = getattr(app.state, "dispatcher_worker", None)
+    if worker and hasattr(worker, "dispatcher"):
+        worker.dispatcher.definir_status_todos(online)
+
+    status_str = "ONLINE" if online else "OFFLINE"
+    registrar_evento(
+        origem="OPERADOR",
+        nivel="INFO" if online else "WARNING",
+        mensagem=f"Todos os operadores do pool foram marcados como {status_str}.",
+        detalhes={"online": online},
+    )
+
+    pool_atualizado = data_service.obter_pool_atendimento()
+    return {
+        "status": "ok",
+        "mensagem": f"Todos os operadores foram definidos como {status_str}.",
+        "online": online,
+        "status_map": status_map,
+        "pool": pool_atualizado,
+    }
+
+
+# -------------------------------------------------------------
 # Streaming em Tempo Real via Server-Sent Events (SSE)
 # -------------------------------------------------------------
 @app.get("/api/stream")

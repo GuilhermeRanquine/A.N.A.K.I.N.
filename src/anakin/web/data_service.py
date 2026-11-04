@@ -317,11 +317,12 @@ class AnakinDataService:
         }
 
     def obter_pool_atendimento(self) -> dict[str, Any]:
-        """Calcula o status do Pool de Atendimento N1/N2 e scores de carga ponderada."""
+        """Calcula o status do Pool de Atendimento N1/N2, presença online e scores de carga ponderada."""
         dispatcher = AutoDispatcher(settings=self.settings, read_only=True)
         scores = dispatcher.calcular_scores_pool()
+        status_online_map = dispatcher.obter_status_operadores()
 
-        # Próximos candidatos por nível
+        # Próximos candidatos por nível (considerando exclusivamente operadores ONLINE)
         try:
             op_n1, _, _, _ = dispatcher.selecionar_operador_por_prioridade(prioridade="Médio")
             proximo_n1 = op_n1
@@ -341,13 +342,15 @@ class AnakinDataService:
                 continue
 
             nivel = "Sênior / N2" if op.email.lower() in POOL_SENIOR_N2_EMAILS else "Pleno / N1"
-            eh_proximo_n1 = proximo_n1 is not None and op.email == proximo_n1.email
-            eh_proximo_n2 = proximo_n2 is not None and op.email == proximo_n2.email
+            is_online = status_online_map.get(op.email.lower(), True)
+            eh_proximo_n1 = is_online and proximo_n1 is not None and op.email == proximo_n1.email
+            eh_proximo_n2 = is_online and proximo_n2 is not None and op.email == proximo_n2.email
 
             operadores_info.append({
                 "nome": op.nome,
                 "email": op.email,
                 "nivel": nivel,
+                "online": is_online,
                 "score_total": sc.score_total,
                 "total_abertos": sc.total_chamados_abertos,
                 "atendendo": sc.qtd_atendendo,
@@ -359,8 +362,11 @@ class AnakinDataService:
                 "eh_proximo_n2": eh_proximo_n2,
             })
 
-        # Ordena pelo menor score (ordem de prioridade para receber chamado)
-        operadores_info.sort(key=lambda x: (x["score_total"], x["total_abertos"]))
+        # Ordenação inteligente: operadores ONLINE primeiro (por menor score), depois OFFLINE
+        operadores_info.sort(key=lambda x: (not x["online"], x["score_total"], x["total_abertos"]))
+
+        total_online = sum(1 for o in operadores_info if o["online"])
+        total_operadores = len(operadores_info)
 
         return {
             "pesos": {
@@ -368,6 +374,8 @@ class AnakinDataService:
                 "a_fazer": self.settings.peso_status_a_fazer,
                 "pausado": self.settings.peso_status_pausado,
             },
+            "total_online": total_online,
+            "total_operadores": total_operadores,
             "proximo_n1": proximo_n1.nome if proximo_n1 else None,
             "proximo_n2": proximo_n2.nome if proximo_n2 else None,
             "operadores": operadores_info,

@@ -12,6 +12,7 @@ if str(SRC_DIR) not in sys.path:
 from anakin.config.settings import Settings
 from anakin.dispatch.auto_dispatcher import (
     AutoDispatcher,
+    NoAvailableOperatorsError,
     OperadorElegivel,
     ScoreOperador,
     OPERADORES_ELEGIVEIS,
@@ -331,6 +332,66 @@ class TestAutoDispatcher(unittest.TestCase):
         with self.assertRaises(CreationSafetyError):
             creator._validar_rota("DELETE", "/chamado/deletar")
 
+
+    def test_operador_offline_ignorado_no_despacho(self) -> None:
+        """Operador marcado como offline deve ser estritamente ignorado no direcionamento."""
+        disp = AutoDispatcher()
+        disp.calcular_scores_pool = lambda: {  # type: ignore
+            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], score_total=1),   # Carlos (Score 1, mas offline)
+            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], score_total=10),  # Gabriel O. (Senior)
+            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=10),  # Gabryel (Senior)
+            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=5),   # Gabriel Sena (Score 5, online)
+            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=10),  # Guilherme (Senior)
+            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=8),   # Kaio (Score 8, online)
+        }
+
+        # Desliga Carlos Eduardo
+        disp.definir_status_operador("carlos.bucazio@upgradeti.com.br", False)
+        disp.definir_status_operador("gabriel.sena@upgradeti.com.br", True)
+
+        try:
+            op, sc, _, _ = disp.selecionar_operador_por_prioridade("Médio")
+            # Carlos tinha score 1, mas está offline! Deve selecionar Gabriel Sena (score 5)
+            self.assertEqual(op.nome, "Gabriel Sena")
+            self.assertEqual(sc.score_total, 5)
+        finally:
+            # Restaura Carlos
+            disp.definir_status_operador("carlos.bucazio@upgradeti.com.br", True)
+
+    def test_fallback_quando_todos_seniores_offline(self) -> None:
+        """Quando todos os seniores estão offline, chamado Crítico cai para pleno online."""
+        disp = AutoDispatcher()
+        disp.calcular_scores_pool = lambda: {  # type: ignore
+            OPERADORES_ELEGIVEIS[0]: ScoreOperador(OPERADORES_ELEGIVEIS[0], score_total=2),   # Carlos (Pleno)
+            OPERADORES_ELEGIVEIS[1]: ScoreOperador(OPERADORES_ELEGIVEIS[1], score_total=1),   # Gabriel O. (Senior offline)
+            OPERADORES_ELEGIVEIS[2]: ScoreOperador(OPERADORES_ELEGIVEIS[2], score_total=1),   # Gabryel (Senior offline)
+            OPERADORES_ELEGIVEIS[3]: ScoreOperador(OPERADORES_ELEGIVEIS[3], score_total=4),   # Gabriel Sena (Pleno)
+            OPERADORES_ELEGIVEIS[4]: ScoreOperador(OPERADORES_ELEGIVEIS[4], score_total=1),   # Guilherme (Senior offline)
+            OPERADORES_ELEGIVEIS[5]: ScoreOperador(OPERADORES_ELEGIVEIS[5], score_total=5),   # Kaio (Pleno)
+        }
+
+        # Desliga todos os 3 seniores
+        disp.definir_status_operador("gabriel@upgradeti.com.br", False)
+        disp.definir_status_operador("gabryel.santos@upgradeti.com.br", False)
+        disp.definir_status_operador("guilherme.melo@upgradeti.com.br", False)
+
+        try:
+            op, sc, _, tag = disp.selecionar_operador_por_prioridade("Crítico")
+            self.assertEqual(op.nome, "Carlos Eduardo")
+            self.assertIn("Fallback por Presença", tag)
+        finally:
+            # Restaura seniores
+            disp.definir_status_todos(True)
+
+    def test_todos_offline_lanca_excecao(self) -> None:
+        """Se 100% dos técnicos estiverem offline, deve lançar NoAvailableOperatorsError."""
+        disp = AutoDispatcher()
+        disp.definir_status_todos(False)
+        try:
+            with self.assertRaises(NoAvailableOperatorsError):
+                disp.selecionar_operador_por_prioridade("Crítico")
+        finally:
+            disp.definir_status_todos(True)
 
 if __name__ == "__main__":
     unittest.main()

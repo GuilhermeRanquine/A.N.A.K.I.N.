@@ -779,3 +779,103 @@ body {
   font-size: 8px;
   color: #94a3b8;
 }
+
+/* ==========================================================================
+   BOTÃO DE PRESENÇA DOS TÉCNICOS (ONLINE / OFFLINE) & POOL CARD STYLES
+   ========================================================================== */
+.pool-card.offline {
+  opacity: 0.52;
+  border-style: dashed;
+  filter: grayscale(0.4);
+  background: color-mix(in srgb, var(--fg) 0.5%, transparent);
+}
+.pool-card.offline:hover {
+  opacity: 0.88;
+  filter: grayscale(0);
+}
+
+.operator-online-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-presence-toggle {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--line-strong);
+  color: var(--dim);
+  font-family: monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  padding: 2px 7px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 2px;
+  transition: all 0.2s cubic-bezier(.2,.8,.2,1);
+  user-select: none;
+}
+.btn-presence-toggle:hover {
+  border-color: var(--ac);
+  color: var(--fg);
+}
+.btn-presence-toggle.on {
+  border-color: #4ade80;
+  background: rgba(74, 222, 128, 0.12);
+  color: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.22);
+}
+.btn-presence-toggle.on:hover {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.btn-presence-toggle.on:hover .presence-label::after {
+  content: " (DESLIGAR)";
+}
+.btn-presence-toggle.off {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+}
+.btn-presence-toggle.off:hover {
+  border-color: #4ade80;
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+.btn-presence-toggle.off:hover .presence-label::after {
+  content: " (LIGAR)";
+}
+
+.presence-indicator-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.presence-indicator-dot.dot-online {
+  background: #4ade80;
+  box-shadow: 0 0 6px #4ade80;
+}
+.presence-indicator-dot.dot-offline {
+  background: #ef4444;
+  box-shadow: 0 0 4px #ef4444;
+}
+
+#pool-online-badge {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.08);
+}
+#pool-online-badge.has-offline {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.08);
+}
+#pool-online-badge.all-offline {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+}

@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>A.N.A.K.I.N // OPERATIONAL HUD CONSOLE</title>
-  <link rel="stylesheet" href="css/hud.css?v=3.2">
-  <link rel="stylesheet" href="css/hud-components.css?v=3.2">
-  <script src="js/vendor/three.min.js?v=3.2"></script>
+  <link rel="stylesheet" href="css/hud.css?v=3.3">
+  <link rel="stylesheet" href="css/hud-components.css?v=3.3">
+  <script src="js/vendor/three.min.js?v=3.3"></script>
   <style>
     /* Estilos e adaptações do console para a arquitetura A.N.A.K.I.N */
     :root {
@@ -493,7 +493,10 @@
           <header>
             <span class="tag">P1</span>
             <span>POOL DE DESPACHO</span>
-            <small id="pool-next-summary">CARREGANDO...</small>
+            <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
+              <span class="holo-badge" id="pool-online-badge">6/6 ONLINE</span>
+              <button class="hud-btn" id="btn-toggle-all-online" title="Ligar todos os técnicos elegíveis para atendimento" style="padding:2px 6px;font-size:8.5px;letter-spacing:0.06em;">⚡ TODOS ON</button>
+            </div>
           </header>
           <div class="panel-body">
             <div style="display:flex;justify-content:space-between;gap:8px;font-size:var(--fs-xs);padding-bottom:4px;border-bottom:1px dashed var(--line);">
@@ -664,7 +667,7 @@
   </div>
 
   <!-- Script Principal do HUD -->
-  <script type="module" src="js/hud-app.js?v=3.2"></script>
+  <script type="module" src="js/hud-app.js?v=3.3"></script>
 </body>
 </html>
 

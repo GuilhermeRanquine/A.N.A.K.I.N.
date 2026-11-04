@@ -132,6 +132,40 @@ class TestHudServer(unittest.TestCase):
         self.assertIn("Verificação automatizada do HUD Console executada com sucesso.", mensagens)
 
 
+    def test_toggle_operador_status_endpoint(self) -> None:
+        """Verifica endpoint POST /api/operadores/status de ligar/desligar operador."""
+        # 1. Desliga o Kaio
+        resp = self.client.post(
+            "/api/operadores/status",
+            json={"email": "kaio.silva@upgradeti.com.br", "online": False},
+        )
+        self.assertEqual(resp.status_code, 200)
+        dados = resp.json()
+        self.assertEqual(dados["status"], "ok")
+        self.assertFalse(dados["online"])
+        self.assertIn("pool", dados)
+
+        # Valida que o Kaio está offline no pool retornado
+        kaio_card = next(o for o in dados["pool"]["operadores"] if "kaio" in o["email"].lower())
+        self.assertFalse(kaio_card["online"])
+
+        # 2. Liga novamente o Kaio
+        resp_on = self.client.post(
+            "/api/operadores/status",
+            json={"email": "kaio.silva@upgradeti.com.br", "online": True},
+        )
+        self.assertEqual(resp_on.status_code, 200)
+        dados_on = resp_on.json()
+        self.assertTrue(dados_on["online"])
+
+    def test_toggle_all_operadores_endpoint(self) -> None:
+        """Verifica endpoint POST /api/operadores/status-all de ligar todos."""
+        resp = self.client.post("/api/operadores/status-all", json={"online": True})
+        self.assertEqual(resp.status_code, 200)
+        dados = resp.json()
+        self.assertEqual(dados["status"], "ok")
+        self.assertEqual(dados["pool"]["total_online"], 6)
+
 if __name__ == "__main__":
     unittest.main()
 

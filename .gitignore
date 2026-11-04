@@ -28,6 +28,7 @@ data/*.parquet
 data/*.csv
 data/*.png
 data/*.jsonl
+data/*.json
 data/prints/
 
 # Prompts e saídas do Agente
